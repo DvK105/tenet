@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "e2b:build:dev": "cd blender-renders && npx tsx build.dev.ts",
+    "e2b:build:prod": "cd blender-renders && npx tsx build.prod.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -40,6 +42,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
+    "e2b": "^2.7.0",
     "embla-carousel-react": "^8.6.0",
     "inngest": "^3.46.0",
     "input-otp": "^1.4.2",
@@ -62,6 +65,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^17.2.3",
     "eslint": "^9",
     "eslint-config-next": "16.0.3",
     "tailwindcss": "^4",
