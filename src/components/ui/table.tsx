@@ -65,7 +65,7 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   )
 }
 
-function TableHead({ className, ...props }: React.ComponentProps<"th">) {
+function TableHead({ className, scope = "col", ...props }: React.ComponentProps<"th">) {
   return (
     <th
       data-slot="table-head"
@@ -73,6 +73,21 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
         "text-foreground h-10 px-2 text-left align-middle font-medium whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
+      scope={scope as React.ThHTMLAttributes<HTMLTableCellElement>["scope"]}
+      {...props}
+    />
+  )
+}
+
+function TableRowHeader({ className, scope = "row", ...props }: React.ComponentProps<"th">) {
+  return (
+    <th
+      data-slot="table-row-header"
+      className={cn(
+        "text-foreground h-10 px-2 text-left align-middle font-medium whitespace-nowrap",
+        className
+      )}
+      scope={scope as React.ThHTMLAttributes<HTMLTableCellElement>["scope"]}
       {...props}
     />
   )
@@ -110,6 +125,7 @@ export {
   TableBody,
   TableFooter,
   TableHead,
+  TableRowHeader,
   TableRow,
   TableCell,
   TableCaption,
