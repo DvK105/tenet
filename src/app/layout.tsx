@@ -1,11 +1,5 @@
 import type { Metadata } from "next";
-import { Lexend } from "next/font/google";
 import "./globals.css";
-
-const mainFont = Lexend({
-  variable: "--font-lexend",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Tenet",
@@ -18,10 +12,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${mainFont.variable} antialiased`}
-      >
+    <html lang="en" className="dark">
+      <body className="font-sans antialiased">
         {children}
       </body>
     </html>

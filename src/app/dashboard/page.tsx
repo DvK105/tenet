@@ -1,9 +1,9 @@
-import React from 'react'
+import { RenderDashboard } from "@/components/dashboard/render-dashboard"
 
-const page = () => {
+export default function Page() {
   return (
-    <div>page</div>
+    <main className="min-h-screen bg-background text-foreground font-sans selection:bg-primary selection:text-primary-foreground overflow-hidden">
+      <RenderDashboard />
+    </main>
   )
 }
-
-export default page
