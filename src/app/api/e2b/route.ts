@@ -9,11 +9,8 @@ const DEFAULT_WIDTH = 1024
 const DEFAULT_HEIGHT = 768
 const DEFAULT_FRAME = 1
 const RENDER_SCRIPT_PATH = '/opt/blender/render.py'
-const TEST_OUTPUT_PATH = '/tmp/test.png'
-
-// Constants for file operations
-const SCENE_FILE_PATH = '/tmp/scene.blend'
-const OUTPUT_PATTERN = '/tmp/frame_####'
+// Builtin render script writes to /tmp; we will copy the result into a secure dir before reading
+const BUILTIN_TEST_OUTPUT_PATH = '/tmp/test.png'
 
 // Types
 type RenderMode = 'builtin' | 'upload'
@@ -36,6 +33,27 @@ function jsonError(message: string, status = 400): NextResponse {
     { ok: false, error: message, mode: 'builtin', stdout: '', stderr: '', imageBase64: null },
     { status }
   )
+}
+
+// Helper: Secure temp directory management inside sandbox
+async function createSecureTmpDir(sandbox: Sandbox): Promise<string> {
+  // mktemp -d creates a uniquely named directory with 0700 permissions
+  const result = await sandbox.commands.run('mktemp -d /tmp/tenet-XXXXXX')
+  const dir = result.stdout.trim()
+  if (!dir || !dir.startsWith('/tmp/')) {
+    throw new Error('Failed to create secure temp directory')
+  }
+  return dir
+}
+
+async function cleanupTmpDir(sandbox: Sandbox, dir: string | null): Promise<void> {
+  if (!dir) return
+  try {
+    // Best-effort cleanup
+    await sandbox.commands.run(`rm -rf -- "${dir}"`)
+  } catch {
+    // ignore
+  }
 }
 
 // Helper: Read file and convert to base64
@@ -68,9 +86,9 @@ function parseRenderParams(form: FormData) {
 }
 
 // Helper: Get output file path for a frame
-function getOutputFilePath(frame: number): string {
+function getOutputFilePath(tmpDir: string, frame: number): string {
   const frameStr = String(frame).padStart(4, '0')
-  return `/tmp/frame_${frameStr}.png`
+  return `${tmpDir}/frame_${frameStr}.png`
 }
 
 // Helper: Build xvfb-run command
@@ -81,14 +99,17 @@ function buildRenderCommand(
   outputPattern: string,
   frame: number
 ): string {
-  return `xvfb-run -s "-screen 0 ${width}x${height}x24" blender -b ${blendFile} -o ${outputPattern} -f ${frame}`
+  // Quote paths to avoid shell interpretation issues
+  return `xvfb-run -s "-screen 0 ${width}x${height}x24" blender -b "${blendFile}" -o "${outputPattern}" -f ${frame}`
 }
 
 // Handler: Built-in test render
-async function handleBuiltinRender(sandbox: Sandbox): Promise<RenderResponse> {
+async function handleBuiltinRender(sandbox: Sandbox, tmpDir: string): Promise<RenderResponse> {
   const cmd = `xvfb-run -s "-screen 0 ${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}x24" blender -b -P ${RENDER_SCRIPT_PATH}`
   const result = await sandbox.commands.run(cmd)
-  const imageBase64 = await readImageAsBase64(sandbox, TEST_OUTPUT_PATH)
+  // Copy result from public /tmp into our secure dir before reading, if it exists
+  await sandbox.commands.run(`if [ -f "${BUILTIN_TEST_OUTPUT_PATH}" ]; then cp "${BUILTIN_TEST_OUTPUT_PATH}" "${tmpDir}/test.png"; fi`)
+  const imageBase64 = await readImageAsBase64(sandbox, `${tmpDir}/test.png`)
 
   return {
     ok: true,
@@ -102,7 +123,8 @@ async function handleBuiltinRender(sandbox: Sandbox): Promise<RenderResponse> {
 // Handler: Upload and render custom .blend file
 async function handleUploadRender(
   sandbox: Sandbox,
-  form: FormData
+  form: FormData,
+  tmpDir: string
 ): Promise<RenderResponse> {
   // Validate file upload
   const blendFile = form.get('blend')
@@ -115,14 +137,16 @@ async function handleUploadRender(
 
   // Write .blend file to sandbox
   const arrayBuffer = await blendFile.arrayBuffer()
-  await sandbox.files.write(SCENE_FILE_PATH, arrayBuffer)
+  const sceneFilePath = `${tmpDir}/scene.blend`
+  await sandbox.files.write(sceneFilePath, arrayBuffer)
 
   // Execute render command
-  const cmd = buildRenderCommand(width, height, SCENE_FILE_PATH, OUTPUT_PATTERN, frame)
+  const outputPattern = `${tmpDir}/frame_####`
+  const cmd = buildRenderCommand(width, height, sceneFilePath, outputPattern, frame)
   const result = await sandbox.commands.run(cmd)
 
   // Read rendered output
-  const outputPath = getOutputFilePath(frame)
+  const outputPath = getOutputFilePath(tmpDir, frame)
   const imageBase64 = await readImageAsBase64(sandbox, outputPath)
 
   return {
@@ -140,6 +164,7 @@ async function handleUploadRender(
 // Main POST handler
 export async function POST(req: Request): Promise<NextResponse> {
   let sandbox: Sandbox | null = null
+  let tmpDir: string | null = null
 
   try {
     // Validate environment
@@ -151,14 +176,16 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     // Create sandbox
     sandbox = await Sandbox.create(SANDBOX_ALIAS)
+    // Create a secure, per-request temp directory inside sandbox
+    tmpDir = await createSecureTmpDir(sandbox)
 
     // Route to appropriate handler
     if (isMultipart) {
       const form = await req.formData()
-      const response = await handleUploadRender(sandbox, form)
+      const response = await handleUploadRender(sandbox, form, tmpDir)
       return NextResponse.json<RenderResponse>(response)
     } else {
-      const response = await handleBuiltinRender(sandbox)
+      const response = await handleBuiltinRender(sandbox, tmpDir)
       return NextResponse.json<RenderResponse>(response)
     }
   } catch (err) {
@@ -167,6 +194,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   } finally {
     // Cleanup: Kill sandbox to free resources
     if (sandbox) {
+      // Clean up temp dir first
+      await cleanupTmpDir(sandbox, tmpDir)
       try {
         await sandbox.kill()
       } catch {

@@ -3,17 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import type { Job } from "@/types/job"
 
 interface RenderQueueProps {
   files: File[]
-  jobs: Array<{
-    id: string
-    name: string
-    status: "queued" | "rendering" | "paused" | "finished" | "error" | "canceled"
-    progress: number
-    frames: string
-    time: string
-  }>
+  jobs: Job[]
   onPause: (id: string) => void
   onCancel: (id: string) => void
 }

@@ -18,8 +18,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Download Blender
-RUN wget -q https://download.blender.org/release/Blender${BLENDER_MAJOR_MINOR}/blender-${BLENDER_VERSION}-linux-x64.tar.xz -O /tmp/blender.tar.xz || \
-    curl -L https://download.blender.org/release/Blender${BLENDER_MAJOR_MINOR}/blender-${BLENDER_VERSION}-linux-x64.tar.xz -o /tmp/blender.tar.xz
+RUN set -eux; \
+    URL="https://download.blender.org/release/Blender${BLENDER_MAJOR_MINOR}/blender-${BLENDER_VERSION}-linux-x64.tar.xz"; \
+    wget --https-only --max-redirect=3 --no-verbose -O /tmp/blender.tar.xz "$URL" || \
+    curl -fsSLo /tmp/blender.tar.xz --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 -L "$URL"
 
 # Extract and install Blender
 RUN mkdir -p /opt && \
