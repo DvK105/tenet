@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=BBH+Sans+Bartle:wght@400;700&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -184,6 +185,22 @@
   --shadow-blur: var(--shadow-blur);
   --shadow-opacity: var(--shadow-opacity);
   --color-shadow-color: var(--shadow-color);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    letter-spacing: var(--tracking-normal);
+  }
+}
+
+@layer utilities {
+  .font-bbh {
+    font-family: "BBH Sans Bartle", var(--font-sans);
+  }
 }
 
 @layer base {
