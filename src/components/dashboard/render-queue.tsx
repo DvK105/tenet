@@ -6,31 +6,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 interface RenderQueueProps {
   files: File[]
+  jobs: Array<{
+    id: string
+    name: string
+    status: "queued" | "rendering" | "paused" | "finished" | "error" | "canceled"
+    progress: number
+    frames: string
+    time: string
+  }>
+  onPause: (id: string) => void
+  onCancel: (id: string) => void
 }
 
-// Mock data for initial view
-const initialJobs = [
-  {
-    id: "JOB-8832",
-    name: "Cyber_City_Sequence_v02.blend",
-    status: "rendering",
-    progress: 64,
-    frames: "1-1200",
-    time: "02:14:32",
-  },
-  { id: "JOB-8831", name: "Character_Rig_Test.ma", status: "queued", progress: 0, frames: "1-150", time: "--:--:--" },
-  { id: "JOB-8830", name: "Product_Shot_Final.c4d", status: "finished", progress: 100, frames: "1", time: "00:12:45" },
-  {
-    id: "JOB-8829",
-    name: "Fluid_Sim_Cache_Bake.hip",
-    status: "error",
-    progress: 45,
-    frames: "100-200",
-    time: "00:05:22",
-  },
-]
-
-export function RenderQueue({ files }: RenderQueueProps) {
+export function RenderQueue({ files, jobs, onPause, onCancel }: RenderQueueProps) {
   // In a real app, files would be converted to jobs here
 
   return (
@@ -66,7 +54,7 @@ export function RenderQueue({ files }: RenderQueueProps) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {initialJobs.map((job) => (
+            {jobs.map((job) => (
               <TableRow key={job.id} className="border-border hover:bg-muted/20 group font-mono text-xs">
                 <TableCell className="font-medium text-muted-foreground">{job.id}</TableCell>
                 <TableCell className="font-medium text-foreground">{job.name}</TableCell>
@@ -107,6 +95,7 @@ export function RenderQueue({ files }: RenderQueueProps) {
                       variant="ghost"
                       size="icon"
                       className="h-6 w-6 rounded-none hover:bg-primary hover:text-primary-foreground"
+                      onClick={() => onPause(job.id)}
                     >
                       <Play className="w-3 h-3" />
                     </Button>
@@ -114,6 +103,7 @@ export function RenderQueue({ files }: RenderQueueProps) {
                       variant="ghost"
                       size="icon"
                       className="h-6 w-6 rounded-none hover:bg-destructive hover:text-destructive-foreground"
+                      onClick={() => onCancel(job.id)}
                     >
                       <X className="w-3 h-3" />
                     </Button>

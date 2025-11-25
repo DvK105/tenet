@@ -7,7 +7,7 @@ export function Header() {
     <header className="h-16 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-6 flex items-center justify-between z-10">
       <div className="flex items-center gap-4">
         <h1 className="text-sm font-medium tracking-widest uppercase text-muted-foreground">
-          <span className="text-foreground font-bold mr-2">DASHBOARD</span> / OVERVIEW
+          <span className="text-foreground font-bold mr-2">DASHBOARD</span> / TENET
         </h1>
       </div>
 
@@ -19,9 +19,6 @@ export function Header() {
             className="pl-9 w-64 bg-muted/30 border-transparent hover:border-border focus:border-primary rounded-none font-mono text-xs h-9 transition-all"
           />
           <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
-            <kbd className="pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground opacity-100">
-              <span className="text-xs">⌘</span>K
-            </kbd>
           </div>
         </div>
 

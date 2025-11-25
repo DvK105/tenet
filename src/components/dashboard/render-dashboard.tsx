@@ -10,10 +10,64 @@ import { SystemStatus } from "@/components/dashboard/system-status"
 
 export function RenderDashboard() {
   const [files, setFiles] = useState<File[]>([])
+  const [jobs, setJobs] = useState<Array<{
+    id: string
+    name: string
+    status: "queued" | "rendering" | "paused" | "finished" | "error" | "canceled"
+    progress: number
+    frames: string
+    time: string
+  }>>([])
   const [currentPage, setCurrentPage] = useState<"upload" | "graph" | "status" | "account">("upload")
 
   const handleUpload = (newFiles: File[]) => {
     setFiles((prev) => [...prev, ...newFiles])
+    // Optimistically add to queue and POST to /api/upload which triggers Inngest
+    newFiles.forEach(async (file) => {
+      const tempId = `LOCAL-${Math.random().toString(36).slice(2, 8)}`
+      setJobs((prev) => [
+        ...prev,
+        {
+          id: tempId,
+          name: file.name,
+          status: "queued",
+          progress: 0,
+          frames: "-",
+          time: "--:--:--",
+        },
+      ])
+
+      try {
+        const fd = new FormData()
+        fd.append("blend", file)
+        const res = await fetch("/api/upload", { method: "POST", body: fd })
+        const json = await res.json()
+        if (res.ok && json?.id) {
+          // Replace temp id with server id
+          setJobs((prev) =>
+            prev.map((j) => (j.id === tempId ? { ...j, id: json.id } : j))
+          )
+        } else {
+          throw new Error(json?.error || "Upload failed")
+        }
+      } catch (e) {
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.name === file.name && j.id.startsWith("LOCAL-")
+              ? { ...j, status: "error" }
+              : j
+          )
+        )
+      }
+    })
+  }
+
+  const handlePause = (id: string) => {
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "paused" } : j)))
+  }
+
+  const handleCancel = (id: string) => {
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "canceled", progress: 0 } : j)))
   }
 
   return (
@@ -30,7 +84,7 @@ export function RenderDashboard() {
           {currentPage === "upload" && (
             <div className="h-full grid grid-rows-2 gap-6">
               <UploadZone onUpload={handleUpload} />
-              <RenderQueue files={files} />
+              <RenderQueue files={files} jobs={jobs} onPause={handlePause} onCancel={handleCancel} />
             </div>
           )}
 
