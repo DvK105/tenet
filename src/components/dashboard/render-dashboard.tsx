@@ -7,24 +7,25 @@ import { UploadZone } from "@/components/dashboard/upload-zone"
 import { RenderQueue } from "@/components/dashboard/render-queue"
 import { PerformanceGraph } from "@/components/dashboard/performance-graph"
 import { SystemStatus } from "@/components/dashboard/system-status"
+import type { Job } from "@/types/job"
 
 export function RenderDashboard() {
   const [files, setFiles] = useState<File[]>([])
-  const [jobs, setJobs] = useState<Array<{
-    id: string
-    name: string
-    status: "queued" | "rendering" | "paused" | "finished" | "error" | "canceled"
-    progress: number
-    frames: string
-    time: string
-  }>>([])
+  const [jobs, setJobs] = useState<Job[]>([])
   const [currentPage, setCurrentPage] = useState<"upload" | "graph" | "status" | "account">("upload")
 
   const handleUpload = (newFiles: File[]) => {
     setFiles((prev) => [...prev, ...newFiles])
     // Optimistically add to queue and POST to /api/upload which triggers Inngest
     newFiles.forEach(async (file) => {
-      const tempId = `LOCAL-${Math.random().toString(36).slice(2, 8)}`
+      const tempId = `LOCAL-${(
+        globalThis.crypto?.randomUUID?.() ??
+        (globalThis.crypto
+          ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)))
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("")
+          : Math.random().toString(36).slice(2))
+      )}`
       setJobs((prev) => [
         ...prev,
         {
@@ -51,13 +52,7 @@ export function RenderDashboard() {
           throw new Error(json?.error || "Upload failed")
         }
       } catch (e) {
-        setJobs((prev) =>
-          prev.map((j) =>
-            j.name === file.name && j.id.startsWith("LOCAL-")
-              ? { ...j, status: "error" }
-              : j
-          )
-        )
+        setJobs((prev) => prev.map((j) => (j.id === tempId ? { ...j, status: "error" } : j)))
       }
     })
   }
