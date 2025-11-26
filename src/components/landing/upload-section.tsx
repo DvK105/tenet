@@ -5,6 +5,8 @@ import type React from "react"
 import { useState, useCallback } from "react"
 import { Upload, File, X, CheckCircle2, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { useRouter } from "next/navigation"
 
 interface UploadedFile {
   id: string
@@ -17,6 +19,7 @@ interface UploadedFile {
 export function UploadSection() {
   const [isDragging, setIsDragging] = useState(false)
   const [files, setFiles] = useState<UploadedFile[]>([])
+  const router = useRouter()
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -171,12 +174,14 @@ export function UploadSection() {
                     </>
                   )}
                   {file.status === "complete" && <CheckCircle2 className="w-5 h-5 text-primary" />}
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => removeFile(file.id)}
                     className="opacity-0 group-hover:opacity-100 transition-opacity duration-300"
                   >
                     <X className="w-5 h-5 text-muted-foreground hover:text-destructive" />
-                  </button>
+                  </Button>
                 </div>
 
                 {/* Progress bar */}
@@ -195,9 +200,12 @@ export function UploadSection() {
 
         {/* Render button */}
         {files.some((f) => f.status === "complete") && (
-          <button className="mt-8 w-full font-mono text-sm tracking-wide py-4 bg-primary text-primary-foreground hover:shadow-[0_0_40px_rgba(0,200,200,0.3)] transition-all duration-500">
+          <Button
+            onClick={() => router.push("/dashboard")}
+            className="mt-8 w-full font-mono text-sm tracking-wide py-4 hover:shadow-[0_0_40px_rgba(0,200,200,0.3)]"
+          >
             Start Rendering →
-          </button>
+          </Button>
         )}
       </div>
     </section>

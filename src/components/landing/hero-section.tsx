@@ -2,9 +2,12 @@
 
 import { useEffect, useRef } from "react"
 import { ChevronDown } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { useRouter } from "next/navigation"
 
 export function HeroSection() {
   const titleRef = useRef<HTMLHeadingElement>(null)
+  const router = useRouter()
 
   useEffect(() => {
     const title = titleRef.current
@@ -20,12 +23,7 @@ export function HeroSection() {
     }
   }, [])
 
-  const scrollToUpload = () => {
-    const element = document.getElementById("upload")
-    if (element) {
-      element.scrollIntoView({ behavior: "smooth" })
-    }
-  }
+  const goToDashboard = () => router.push("/dashboard")
 
   return (
     <section className="relative min-h-screen flex flex-col items-center justify-center px-6 pt-20">
@@ -57,16 +55,16 @@ export function HeroSection() {
 
       {/* CTA Buttons */}
       <div className="mt-12 flex flex-col sm:flex-row items-center gap-4 animate-fade-in animation-delay-500">
-        <button
-          onClick={scrollToUpload}
-          className="group relative font-mono text-sm tracking-wide px-8 py-4 bg-primary text-primary-foreground hover:shadow-[0_0_30px_rgba(0,200,200,0.3)] transition-all duration-500"
+        <Button
+          onClick={goToDashboard}
+          className="group relative font-mono text-sm tracking-wide px-8 py-4 hover:shadow-[0_0_30px_rgba(0,200,200,0.3)]"
         >
           Start Rendering
           <div className="absolute inset-0 border border-primary opacity-0 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500" />
-        </button>
-        <button className="font-mono text-sm tracking-wide px-8 py-4 border border-border text-foreground hover:border-primary hover:text-primary transition-all duration-300">
+        </Button>
+        <Button variant="outline" className="font-mono text-sm tracking-wide px-8 py-4">
           View Documentation
-        </button>
+        </Button>
       </div>
 
       {/* Scroll indicator */}

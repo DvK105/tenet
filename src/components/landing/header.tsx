@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 
 export function Header() {
   const [scrolled, setScrolled] = useState(false)
@@ -38,24 +39,26 @@ export function Header() {
         {/* Navigation */}
         <nav className="hidden md:flex items-center gap-8">
           {["Upload", "Pricing"].map((item) => (
-            <button
+            <Button
               key={item}
               onClick={() => scrollToSection(item.toLowerCase())}
+              variant="ghost"
               className="font-mono text-sm text-muted-foreground hover:text-primary transition-colors duration-300 tracking-wide"
             >
               {item}
-            </button>
+            </Button>
           ))}
         </nav>
 
         {/* CTA */}
-        <button
+        <Button
           onClick={() => scrollToSection("upload")}
+          variant="outline"
           className="group relative font-mono text-sm tracking-wide px-6 py-2 border border-primary text-primary hover:bg-primary hover:text-primary-foreground transition-all duration-300"
         >
           <span className="relative z-10">Start Rendering</span>
           <div className="absolute inset-0 bg-primary/10 group-hover:bg-primary transition-all duration-300" />
-        </button>
+        </Button>
       </div>
     </header>
   )

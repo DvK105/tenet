@@ -2,6 +2,8 @@
 
 import { Check } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { useRouter } from "next/navigation"
 
 const plans = [
   {
@@ -42,6 +44,8 @@ const plans = [
 ]
 
 export function PricingSection() {
+  const router = useRouter()
+  const goToDashboard = () => router.push("/dashboard")
   return (
     <section id="pricing" className="relative py-32 px-6">
       <div className="max-w-6xl mx-auto">
@@ -103,16 +107,18 @@ export function PricingSection() {
               </ul>
 
               {/* CTA */}
-              <button
+              <Button
+                onClick={goToDashboard}
                 className={cn(
                   "mt-10 w-full font-mono text-sm tracking-wide py-3 transition-all duration-500",
                   plan.highlighted
-                    ? "bg-primary text-primary-foreground hover:shadow-[0_0_30px_rgba(0,200,200,0.3)]"
-                    : "border border-border text-foreground hover:border-primary hover:text-primary",
+                    ? "hover:shadow-[0_0_30px_rgba(0,200,200,0.3)]"
+                    : "",
                 )}
+                variant={plan.highlighted ? "default" : "outline"}
               >
                 {plan.price === "Custom" ? "Contact Sales" : "Get Started"}
-              </button>
+              </Button>
 
               {/* Corner accent */}
               <div className="absolute top-0 right-0 w-8 h-8 border-r border-t border-primary/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />

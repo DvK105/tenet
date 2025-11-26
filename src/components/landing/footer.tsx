@@ -1,5 +1,7 @@
 "use client"
 
+import { Button } from "@/components/ui/button"
+
 export function Footer() {
   const scrollToTop = () => {
     window.scrollTo({ top: 0, behavior: "smooth" })
@@ -55,13 +57,14 @@ export function Footer() {
         {/* Bottom bar */}
         <div className="mt-16 pt-8 border-t border-border flex flex-col md:flex-row items-center justify-between gap-4">
           <p className="font-mono text-xs text-muted-foreground">© 2025 TENET Render Systems. All rights reserved.</p>
-          <button
+          <Button
+            variant="ghost"
             onClick={scrollToTop}
             className="group flex items-center gap-2 font-mono text-xs text-muted-foreground hover:text-primary transition-colors duration-300"
           >
             Back to top
             <span className="group-hover:-translate-y-1 transition-transform duration-300">↑</span>
-          </button>
+          </Button>
         </div>
       </div>
     </footer>
