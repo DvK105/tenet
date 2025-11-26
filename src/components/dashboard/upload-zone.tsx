@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef } from "react"
-import { Upload, File, X, Cpu, ArrowRight } from 'lucide-react'
+import { Upload, File, X, Cpu, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -23,6 +23,10 @@ const ALLOWED_3D_EXTENSIONS = [
   "hip",
 ] as const
 
+const SUPPORTED_3D_LABEL = ALLOWED_3D_EXTENSIONS.map(
+  (ext) => `.${ext.toUpperCase()}`,
+).join(" ")
+
 function is3DFile(file: File) {
   const parts = file.name.split(".")
   const ext = parts.length > 1 ? parts[parts.length - 1].toLowerCase() : ""
@@ -32,6 +36,7 @@ function is3DFile(file: File) {
 export function UploadZone({ onUpload }: UploadZoneProps) {
   const [dragActive, setDragActive] = useState(false)
   const [stagedFiles, setStagedFiles] = useState<File[]>([])
+  const [lastRejectedCount, setLastRejectedCount] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const handleDrag = (e: React.DragEvent) => {
@@ -62,11 +67,17 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
 
   const addFiles = (newFiles: File[]) => {
     const validFiles = newFiles.filter(is3DFile)
+    const rejectedCount = newFiles.length - validFiles.length
+
+    if (rejectedCount > 0) {
+      setLastRejectedCount(rejectedCount)
+    }
+
     if (validFiles.length === 0) {
-      // Silently ignore non-3D files for now; can be wired to a toast later
       return
     }
-    setStagedFiles(prev => [...prev, ...validFiles])
+
+    setStagedFiles((prev) => [...prev, ...validFiles])
   }
 
   const removeFile = (index: number) => {
@@ -126,8 +137,15 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
                   DRAG_AND_DROP_3D_FILES
                 </p>
                 <p className="text-xs font-mono text-muted-foreground">
-                  SUPPORTED: .BLEND .FBX .OBJ .STL .GLTF .GLB .C4D .MA .MB .HIP
+                  SUPPORTED: {SUPPORTED_3D_LABEL}
                 </p>
+                {lastRejectedCount > 0 && (
+                  <p className="mt-1 text-[10px] font-mono text-destructive/80">
+                    Ignored {lastRejectedCount} non-3D file
+                    {lastRejectedCount > 1 ? "s" : ""}. Only {SUPPORTED_3D_LABEL} are
+                    accepted.
+                  </p>
+                )}
               </div>
               <Button 
                 variant="outline" 
@@ -181,7 +199,7 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
                 CANCEL
               </Button>
               <Button 
-                className="flex-[2] rounded-none bg-primary text-primary-foreground hover:bg-primary/90 font-mono uppercase tracking-widest"
+                className="flex-2 rounded-none bg-primary text-primary-foreground hover:bg-primary/90 font-mono uppercase tracking-widest"
                 onClick={handleSubmit}
               >
                 INITIATE_RENDER <ArrowRight className="w-4 h-4 ml-2" />
