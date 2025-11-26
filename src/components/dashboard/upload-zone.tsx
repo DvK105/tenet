@@ -10,6 +10,25 @@ interface UploadZoneProps {
   onUpload: (files: File[]) => void
 }
 
+const ALLOWED_3D_EXTENSIONS = [
+  "blend",
+  "fbx",
+  "obj",
+  "stl",
+  "gltf",
+  "glb",
+  "c4d",
+  "ma",
+  "mb",
+  "hip",
+] as const
+
+function is3DFile(file: File) {
+  const parts = file.name.split(".")
+  const ext = parts.length > 1 ? parts[parts.length - 1].toLowerCase() : ""
+  return (ALLOWED_3D_EXTENSIONS as readonly string[]).includes(ext)
+}
+
 export function UploadZone({ onUpload }: UploadZoneProps) {
   const [dragActive, setDragActive] = useState(false)
   const [stagedFiles, setStagedFiles] = useState<File[]>([])
@@ -42,7 +61,12 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
   }
 
   const addFiles = (newFiles: File[]) => {
-    setStagedFiles(prev => [...prev, ...newFiles])
+    const validFiles = newFiles.filter(is3DFile)
+    if (validFiles.length === 0) {
+      // Silently ignore non-3D files for now; can be wired to a toast later
+      return
+    }
+    setStagedFiles(prev => [...prev, ...validFiles])
   }
 
   const removeFile = (index: number) => {
@@ -99,10 +123,10 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
               </div>
               <div className="text-center space-y-1">
                 <p className="text-sm font-medium">
-                  DRAG_AND_DROP_FILES
+                  DRAG_AND_DROP_3D_FILES
                 </p>
                 <p className="text-xs font-mono text-muted-foreground">
-                  SUPPORTED: .BLEND .C4D .HIP .MA
+                  SUPPORTED: .BLEND .FBX .OBJ .STL .GLTF .GLB .C4D .MA .MB .HIP
                 </p>
               </div>
               <Button 
