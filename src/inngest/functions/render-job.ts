@@ -57,7 +57,9 @@ export const renderJob = inngest.createFunction(
           )
         }
 
-        return data.arrayBuffer()
+        const arrayBuffer = await data.arrayBuffer()
+        // Ensure we treat this as a standard ArrayBuffer for the sandbox API
+        return arrayBuffer as ArrayBuffer
       },
     )
 
@@ -80,7 +82,7 @@ export const renderJob = inngest.createFunction(
 
         // Write the .blend file into the sandbox
         const sceneFilePath = `${tmpDir}/scene.blend`
-        await sandbox.files.write(sceneFilePath, await blendArrayBuffer)
+        await sandbox.files.write(sceneFilePath, blendArrayBuffer as ArrayBuffer)
 
         // Build and run a Blender command that auto-detects frame range via Python
         // and renders an image sequence to tmpDir/frames/frame_####.png
@@ -107,12 +109,15 @@ export const renderJob = inngest.createFunction(
         console.log("[render-job] ffmpeg stdout:", ffmpegResult.stdout)
         console.log("[render-job] ffmpeg stderr:", ffmpegResult.stderr)
 
-        // Read the MP4 from the sandbox
-        const file = await sandbox.files.read(outputVideoPath)
+        // Read the MP4 from the sandbox; treat it as opaque binary data suitable for upload
+        const fileData = (await sandbox.files.read(outputVideoPath)) as unknown as
+          | ArrayBuffer
+          | Blob
+          | string
 
         const { data, error } = await supabase.storage
           .from(outputBucket)
-          .upload(`jobs/${id}/output.mp4`, file.buffer ?? file, {
+          .upload(`jobs/${id}/output.mp4`, fileData, {
             contentType: "video/mp4",
             upsert: true,
           })
