@@ -11,7 +11,7 @@ USER root
 # Install system dependencies
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    wget xz-utils xvfb \
+    wget xz-utils xvfb ffmpeg \
     libxi6 libxxf86vm1 libxrender1 libxfixes3 \
     libgl1-mesa-glx libglu1-mesa libgles2-mesa \
     libxrandr2 libxext6 python3 ca-certificates curl && \

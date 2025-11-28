@@ -65,6 +65,11 @@ export function RenderDashboard() {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "canceled", progress: 0 } : j)))
   }
 
+  const handleClearQueue = () => {
+    setJobs([])
+    setFiles([])
+  }
+
   return (
     <div className="flex h-screen w-full bg-background text-foreground">
       <Sidebar currentPage={currentPage} onPageChange={setCurrentPage} />
@@ -79,7 +84,13 @@ export function RenderDashboard() {
           {currentPage === "upload" && (
             <div className="h-full grid grid-rows-2 gap-6">
               <UploadZone onUpload={handleUpload} />
-              <RenderQueue files={files} jobs={jobs} onPause={handlePause} onCancel={handleCancel} />
+              <RenderQueue
+                files={files}
+                jobs={jobs}
+                onPause={handlePause}
+                onCancel={handleCancel}
+                onClear={handleClearQueue}
+              />
             </div>
           )}
 

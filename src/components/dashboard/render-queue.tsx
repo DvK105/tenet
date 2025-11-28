@@ -10,9 +10,10 @@ interface RenderQueueProps {
   jobs: Job[]
   onPause: (id: string) => void
   onCancel: (id: string) => void
+  onClear: () => void
 }
 
-export function RenderQueue({ files, jobs, onPause, onCancel }: RenderQueueProps) {
+export function RenderQueue({ files, jobs, onPause, onCancel, onClear }: RenderQueueProps) {
   // In a real app, files would be converted to jobs here
 
   return (
@@ -29,6 +30,7 @@ export function RenderQueue({ files, jobs, onPause, onCancel }: RenderQueueProps
             variant="outline"
             size="sm"
             className="rounded-none h-7 font-mono text-xs border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground bg-transparent"
+            onClick={onClear}
           >
             <Trash2 className="w-3 h-3 mr-2" /> CLEAR
           </Button>
