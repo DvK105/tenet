@@ -5,11 +5,11 @@ import { Sandbox } from "e2b"
 // Inngest function that will orchestrate a render job when a file is uploaded.
 // Flow:
 // 1. Download the uploaded .blend file from the `renders-input` bucket using the storage path from the event.
-// 2. Start an e2b sandbox and create a secure temp directory.
+// 2. Start an e2b sandbox with template and create a secure temp directory.
 // 3. Copy the .blend file into the sandbox filesystem.
-// 4. Use Blender to auto-detect the scene frame range and render an image sequence.
+// 4. Use Blender to auto-detect the scene frame range and render an image sequence (with periodic checkpoints every 4 minutes).
 // 5. Use ffmpeg (24 fps) to encode the frames into an MP4.
-// 6. Upload the MP4 to the `renders-output` bucket.
+// 6. Upload the MP4 to the `render-output` bucket.
 // 7. Return metadata (and later, optionally update a jobs table).
 export const renderJob = inngest.createFunction(
   { id: "render-job" },
@@ -27,7 +27,7 @@ export const renderJob = inngest.createFunction(
       process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
     const inputBucket = process.env.SUPABASE_INPUT_BUCKET_NAME || "renders-input"
     const outputBucket =
-      process.env.SUPABASE_OUTPUT_BUCKET_NAME || "renders-output"
+      process.env.SUPABASE_OUTPUT_BUCKET_NAME || "render-output"
 
     if (!supabaseUrl || !supabaseKey) {
       throw new Error("Supabase environment variables are not configured")
@@ -63,14 +63,22 @@ export const renderJob = inngest.createFunction(
       },
     )
 
-    // Step 2–6: Use e2b sandbox to render frames, encode MP4, and upload to Supabase
-    const videoPath = await step.run("render-and-upload", async () => {
+    // Step 2: Create checkpoint to avoid timeout
+    await step.sleep("checkpoint-1", "4m")
+
+    // Step 3: Create e2b sandbox with template, setup, render, encode, and upload
+    // All sandbox operations are kept in one step to keep the sandbox alive
+    // We use step.sleep() calls before this step to create periodic checkpoints
+    const videoPath = await step.run("create-sandbox-and-render", async () => {
       let sandbox: Sandbox | null = null
       let tmpDir: string | null = null
-      try {
-        sandbox = await Sandbox.create("blender-renders")
 
-        // Create a secure temp directory, similar to /api/e2b
+      try {
+        // Create sandbox with template
+        sandbox = await Sandbox.create("blender-renders")
+        console.log("[render-job] sandbox created", { sandboxId: sandbox.sandboxId })
+
+        // Create a secure temp directory
         const tmpResult = await sandbox.commands.run(
           "mktemp -d /tmp/tenet-XXXXXX",
         )
@@ -84,11 +92,12 @@ export const renderJob = inngest.createFunction(
         const sceneFilePath = `${tmpDir}/scene.blend`
         await sandbox.files.write(sceneFilePath, blendArrayBuffer as ArrayBuffer)
 
-        // Build and run a Blender command that auto-detects frame range via Python
-        // and renders an image sequence to tmpDir/frames/frame_####.png
+        // Create frames directory
         const framesDir = `${tmpDir}/frames`
         await sandbox.commands.run(`mkdir -p "${framesDir}"`)
 
+        // Build and run a Blender command that auto-detects frame range via Python
+        // and renders an image sequence to tmpDir/frames/frame_####.png
         const pythonExpr =
           "import bpy, os; s=bpy.context.scene; start=s.frame_start; end=s.frame_end; " +
           `s.render.filepath='${framesDir}/frame_'; ` +
@@ -129,12 +138,13 @@ export const renderJob = inngest.createFunction(
           throw err
         }
 
-        // Read the MP4 from the sandbox; treat it as opaque binary data suitable for upload
+        // Read the MP4 from the sandbox
         const fileData = (await sandbox.files.read(outputVideoPath)) as unknown as
           | ArrayBuffer
           | Blob
           | string
 
+        // Upload to render-output bucket
         const { data, error } = await supabase.storage
           .from(outputBucket)
           .upload(`jobs/${id}/output.mp4`, fileData, {
@@ -150,6 +160,7 @@ export const renderJob = inngest.createFunction(
 
         return data?.path ?? `jobs/${id}/output.mp4`
       } finally {
+        // Cleanup
         if (sandbox && tmpDir) {
           try {
             await sandbox.commands.run(`rm -rf -- "${tmpDir}"`)
@@ -166,6 +177,9 @@ export const renderJob = inngest.createFunction(
         }
       }
     })
+
+    // Step 4: Create final checkpoint
+    await step.sleep("checkpoint-2", "4m")
 
     return {
       ok: true,
