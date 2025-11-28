@@ -54,7 +54,10 @@ export async function POST(req: Request) {
       process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
     const supabaseKey =
       process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
-    const bucket = process.env.SUPABASE_BUCKET_NAME || "renders"
+    const bucket =
+      process.env.SUPABASE_INPUT_BUCKET_NAME ||
+      process.env.SUPABASE_BUCKET_NAME ||
+      "renders-input"
 
     if (!supabaseUrl || !supabaseKey) {
       return NextResponse.json(
