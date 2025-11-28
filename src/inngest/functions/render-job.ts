@@ -96,18 +96,38 @@ export const renderJob = inngest.createFunction(
 
         const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" blender -b "${sceneFilePath}" --python-expr "${pythonExpr}"`
 
-        const renderResult = await sandbox.commands.run(fullBlenderCmd)
-        console.log("[render-job] blender stdout:", renderResult.stdout)
-        console.log("[render-job] blender stderr:", renderResult.stderr)
+        try {
+          const renderResult = await sandbox.commands.run(fullBlenderCmd)
+          console.log("[render-job] blender stdout:", renderResult.stdout)
+          console.log("[render-job] blender stderr:", renderResult.stderr)
+        } catch (err: any) {
+          console.error("[render-job] blender command failed", {
+            message: err?.message,
+            exitCode: err?.exitCode,
+            stdout: err?.stdout,
+            stderr: err?.stderr,
+          })
+          throw err
+        }
 
         // After rendering frames, run ffmpeg at 24 fps to produce MP4
         const outputVideoPath = `${tmpDir}/output.mp4`
         const ffmpegCmd =
           `ffmpeg -y -framerate 24 -i "${framesDir}/frame_%04d.png" -c:v libx264 -pix_fmt yuv420p "${outputVideoPath}"`
 
-        const ffmpegResult = await sandbox.commands.run(ffmpegCmd)
-        console.log("[render-job] ffmpeg stdout:", ffmpegResult.stdout)
-        console.log("[render-job] ffmpeg stderr:", ffmpegResult.stderr)
+        try {
+          const ffmpegResult = await sandbox.commands.run(ffmpegCmd)
+          console.log("[render-job] ffmpeg stdout:", ffmpegResult.stdout)
+          console.log("[render-job] ffmpeg stderr:", ffmpegResult.stderr)
+        } catch (err: any) {
+          console.error("[render-job] ffmpeg command failed", {
+            message: err?.message,
+            exitCode: err?.exitCode,
+            stdout: err?.stdout,
+            stderr: err?.stderr,
+          })
+          throw err
+        }
 
         // Read the MP4 from the sandbox; treat it as opaque binary data suitable for upload
         const fileData = (await sandbox.files.read(outputVideoPath)) as unknown as
