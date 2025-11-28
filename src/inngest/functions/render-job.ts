@@ -66,9 +66,10 @@ export const renderJob = inngest.createFunction(
     // Step 2: Create checkpoint to avoid timeout
     await step.sleep("checkpoint-1", "4m")
 
-    // Step 3: Create e2b sandbox with template, setup, render, encode, and upload
-    // All sandbox operations are kept in one step to keep the sandbox alive
-    // We use step.sleep() calls before this step to create periodic checkpoints
+    // Step 3: Create e2b sandbox, setup, render, encode, and upload
+    // Following eduvids architecture: keep sandbox operations in one step
+    // but use step.sleep() calls to create periodic checkpoints
+    // The sandbox stays alive within the step.run() execution context
     const videoPath = await step.run("create-sandbox-and-render", async () => {
       let sandbox: Sandbox | null = null
       let tmpDir: string | null = null
@@ -91,24 +92,57 @@ export const renderJob = inngest.createFunction(
         // Write the .blend file into the sandbox
         const sceneFilePath = `${tmpDir}/scene.blend`
         await sandbox.files.write(sceneFilePath, blendArrayBuffer as ArrayBuffer)
+        console.log("[render-job] wrote blend file to sandbox", { sceneFilePath })
+
+        // Verify file was written
+        const verifyFile = await sandbox.commands.run(`test -f "${sceneFilePath}" && echo "exists" || echo "missing"`)
+        if (!verifyFile.stdout.includes("exists")) {
+          throw new Error(`Failed to verify blend file exists at ${sceneFilePath}`)
+        }
 
         // Create frames directory
         const framesDir = `${tmpDir}/frames`
         await sandbox.commands.run(`mkdir -p "${framesDir}"`)
+        console.log("[render-job] created frames directory", { framesDir })
 
-        // Build and run a Blender command that auto-detects frame range via Python
-        // and renders an image sequence to tmpDir/frames/frame_####.png
-        const pythonExpr =
-          "import bpy, os; s=bpy.context.scene; start=s.frame_start; end=s.frame_end; " +
-          `s.render.filepath='${framesDir}/frame_'; ` +
-          "bpy.ops.render.render(animation=True)"
+        // Create a Python script for rendering
+        const renderScriptPath = `${tmpDir}/render.py`
+        const renderScript = `import bpy
+import os
 
-        const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" blender -b "${sceneFilePath}" --python-expr "${pythonExpr}"`
+# Get the scene
+s = bpy.context.scene
 
+# Set output path
+frames_dir = r'${framesDir}'
+s.render.filepath = os.path.join(frames_dir, 'frame_')
+
+# Render animation
+print(f"Rendering from frame {s.frame_start} to {s.frame_end}")
+print(f"Output path: {s.render.filepath}")
+bpy.ops.render.render(animation=True)
+print("Render complete")
+`
+        await sandbox.files.write(renderScriptPath, renderScript)
+        console.log("[render-job] created render script", { renderScriptPath })
+
+        // Build and run a Blender command using the Python script
+        const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" blender -b "${sceneFilePath}" -P "${renderScriptPath}"`
+
+        console.log("[render-job] executing blender command")
         try {
           const renderResult = await sandbox.commands.run(fullBlenderCmd)
           console.log("[render-job] blender stdout:", renderResult.stdout)
           console.log("[render-job] blender stderr:", renderResult.stderr)
+          
+          // Check if any frames were rendered
+          const checkFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | wc -l`)
+          const frameCount = parseInt(checkFrames.stdout.trim())
+          console.log("[render-job] frames rendered:", frameCount)
+          
+          if (frameCount === 0) {
+            throw new Error("No frames were rendered. Check Blender output for errors.")
+          }
         } catch (err: any) {
           console.error("[render-job] blender command failed", {
             message: err?.message,
@@ -116,18 +150,35 @@ export const renderJob = inngest.createFunction(
             stdout: err?.stdout,
             stderr: err?.stderr,
           })
-          throw err
+          throw new Error(
+            `Blender render failed: ${err?.message || "Unknown error"}. Exit code: ${err?.exitCode || "unknown"}. Stderr: ${err?.stderr || "none"}`
+          )
         }
 
         // After rendering frames, run ffmpeg at 24 fps to produce MP4
         const outputVideoPath = `${tmpDir}/output.mp4`
+        
+        // Check frame files before encoding
+        const listFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | head -5`)
+        console.log("[render-job] sample frame files:", listFrames.stdout)
+        
         const ffmpegCmd =
-          `ffmpeg -y -framerate 24 -i "${framesDir}/frame_%04d.png" -c:v libx264 -pix_fmt yuv420p "${outputVideoPath}"`
+          `ffmpeg -y -framerate 24 -i "${framesDir}/frame_%04d.png" -c:v libx264 -pix_fmt yuv420p -crf 23 "${outputVideoPath}"`
 
+        console.log("[render-job] executing ffmpeg command")
         try {
           const ffmpegResult = await sandbox.commands.run(ffmpegCmd)
           console.log("[render-job] ffmpeg stdout:", ffmpegResult.stdout)
           console.log("[render-job] ffmpeg stderr:", ffmpegResult.stderr)
+          
+          // Verify video was created
+          const verifyVideo = await sandbox.commands.run(`test -f "${outputVideoPath}" && echo "exists" || echo "missing"`)
+          if (!verifyVideo.stdout.includes("exists")) {
+            throw new Error("FFmpeg completed but output video file was not created")
+          }
+          
+          const videoSize = await sandbox.commands.run(`stat -c%s "${outputVideoPath}"`)
+          console.log("[render-job] video file size:", videoSize.stdout.trim(), "bytes")
         } catch (err: any) {
           console.error("[render-job] ffmpeg command failed", {
             message: err?.message,
@@ -135,7 +186,9 @@ export const renderJob = inngest.createFunction(
             stdout: err?.stdout,
             stderr: err?.stderr,
           })
-          throw err
+          throw new Error(
+            `FFmpeg encoding failed: ${err?.message || "Unknown error"}. Exit code: ${err?.exitCode || "unknown"}. Stderr: ${err?.stderr || "none"}`
+          )
         }
 
         // Read the MP4 from the sandbox
