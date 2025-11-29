@@ -128,6 +128,24 @@ print("Render complete")
         await sandbox.files.write(renderScriptPath, renderScript)
         console.log("[render-job] created render script", { renderScriptPath })
 
+        // Ensure Blender binary works before invoking xvfb
+        try {
+          const blenderVersion = await sandbox.commands.run(`${BLENDER_BIN} -v`)
+          console.log("[render-job] blender version check:", blenderVersion.stdout)
+        } catch (versionErr: any) {
+          console.error("[render-job] blender version check failed", {
+            message: versionErr?.message,
+            exitCode: versionErr?.exitCode,
+            stdout: versionErr?.stdout,
+            stderr: versionErr?.stderr,
+          })
+          throw new Error(
+            `Blender binary check failed: ${versionErr?.message || "Unknown error"}. Exit code: ${versionErr?.exitCode || "unknown"}. Stdout: ${
+              versionErr?.stdout || "none"
+            }. Stderr: ${versionErr?.stderr || "none"}`
+          )
+        }
+
         // Build and run a Blender command using the Python script
         const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
 
@@ -151,9 +169,10 @@ print("Render complete")
             exitCode: err?.exitCode,
             stdout: err?.stdout,
             stderr: err?.stderr,
+            rawError: err,
           })
           throw new Error(
-            `Blender render failed: ${err?.message || "Unknown error"}. Exit code: ${err?.exitCode || "unknown"}. Stderr: ${err?.stderr || "none"}`
+            `Blender render failed: ${err?.message || "Unknown error"}. Exit code: ${err?.exitCode || "unknown"}. Stdout: ${err?.stdout || "none"}. Stderr: ${err?.stderr || "none"}`
           )
         }
 
