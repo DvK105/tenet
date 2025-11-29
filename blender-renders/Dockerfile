@@ -2,11 +2,11 @@ FROM e2bdev/base:latest
 
 # Configuration - Update BLENDER_VERSION to get newer versions
 # Check https://download.blender.org/release/ for available versions
-ARG BLENDER_VERSION=4.1.0
-ARG BLENDER_MAJOR_MINOR=4.1
-ENV BLENDER_VERSION=4.1.0
-ENV BLENDER_MAJOR_MINOR=4.1
-ENV BLENDER_DIR=/opt/blender-4.1.0-linux-x64
+ARG BLENDER_VERSION=4.5.0
+ARG BLENDER_MAJOR_MINOR=4.5
+ENV BLENDER_VERSION=4.5.0
+ENV BLENDER_MAJOR_MINOR=4.5
+ENV BLENDER_DIR=/opt/blender-4.5.0-linux-x64
 
 # Switch to root for package installation
 USER root
