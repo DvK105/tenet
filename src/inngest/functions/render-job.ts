@@ -2,6 +2,8 @@ import { inngest } from "../client"
 import { createClient } from "@supabase/supabase-js"
 import { Sandbox } from "e2b"
 
+const BLENDER_BIN = "/usr/local/bin/blender"
+
 // Inngest function that will orchestrate a render job when a file is uploaded.
 // Flow:
 // 1. Download the uploaded .blend file from the `renders-input` bucket using the storage path from the event.
@@ -127,7 +129,7 @@ print("Render complete")
         console.log("[render-job] created render script", { renderScriptPath })
 
         // Build and run a Blender command using the Python script
-        const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" blender -b "${sceneFilePath}" -P "${renderScriptPath}"`
+        const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
 
         console.log("[render-job] executing blender command")
         try {

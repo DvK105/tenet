@@ -5,6 +5,7 @@ export const runtime = 'nodejs'
 
 // Configuration
 const SANDBOX_ALIAS = 'blender-renders'
+const BLENDER_BIN = '/usr/local/bin/blender'
 const DEFAULT_WIDTH = 1024
 const DEFAULT_HEIGHT = 768
 const DEFAULT_FRAME = 1
@@ -100,12 +101,12 @@ function buildRenderCommand(
   frame: number
 ): string {
   // Quote paths to avoid shell interpretation issues
-  return `xvfb-run -s "-screen 0 ${width}x${height}x24" blender -b "${blendFile}" -o "${outputPattern}" -f ${frame}`
+  return `xvfb-run -s "-screen 0 ${width}x${height}x24" ${BLENDER_BIN} -b "${blendFile}" -o "${outputPattern}" -f ${frame}`
 }
 
 // Handler: Built-in test render
 async function handleBuiltinRender(sandbox: Sandbox, tmpDir: string): Promise<RenderResponse> {
-  const cmd = `xvfb-run -s "-screen 0 ${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}x24" blender -b -P ${RENDER_SCRIPT_PATH}`
+  const cmd = `xvfb-run -s "-screen 0 ${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}x24" ${BLENDER_BIN} -b -P ${RENDER_SCRIPT_PATH}`
   const result = await sandbox.commands.run(cmd)
   // Copy result from public /tmp into our secure dir before reading, if it exists
   await sandbox.commands.run(`if [ -f "${BUILTIN_TEST_OUTPUT_PATH}" ]; then cp "${BUILTIN_TEST_OUTPUT_PATH}" "${tmpDir}/test.png"; fi`)
