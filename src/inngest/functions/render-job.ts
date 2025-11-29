@@ -2,7 +2,7 @@ import { inngest } from "../client"
 import { createClient } from "@supabase/supabase-js"
 import { Sandbox } from "e2b"
 
-const BLENDER_BIN = "/usr/local/bin/blender"
+const BLENDER_BIN = "/opt/blender-4.0.0-linux-x64/blender"
 
 // Inngest function that will orchestrate a render job when a file is uploaded.
 // Flow:

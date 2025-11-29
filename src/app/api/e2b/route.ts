@@ -5,7 +5,7 @@ export const runtime = 'nodejs'
 
 // Configuration
 const SANDBOX_ALIAS = 'blender-renders'
-const BLENDER_BIN = '/usr/local/bin/blender'
+const BLENDER_BIN = '/opt/blender-4.0.0-linux-x64/blender'
 const DEFAULT_WIDTH = 1024
 const DEFAULT_HEIGHT = 768
 const DEFAULT_FRAME = 1
