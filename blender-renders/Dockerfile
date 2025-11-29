@@ -1,9 +1,12 @@
 FROM e2bdev/base:latest
 
-# Configuration
-ARG BLENDER_VERSION=4.0.0
-ARG BLENDER_MAJOR_MINOR=4.0
-ENV BLENDER_DIR=/opt/blender-${BLENDER_VERSION}-linux-x64
+# Configuration - Update BLENDER_VERSION to get newer versions
+# Check https://download.blender.org/release/ for available versions
+ARG BLENDER_VERSION=4.1.0
+ARG BLENDER_MAJOR_MINOR=4.1
+ENV BLENDER_VERSION=4.1.0
+ENV BLENDER_MAJOR_MINOR=4.1
+ENV BLENDER_DIR=/opt/blender-4.1.0-linux-x64
 
 # Switch to root for package installation
 USER root
@@ -17,9 +20,10 @@ RUN apt-get update && \
     libxrandr2 libxext6 python3 ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Download Blender
+# Download Blender - Use ENV variables which are available in RUN commands
 RUN set -eux; \
     URL="https://download.blender.org/release/Blender${BLENDER_MAJOR_MINOR}/blender-${BLENDER_VERSION}-linux-x64.tar.xz"; \
+    echo "Downloading Blender ${BLENDER_VERSION} from: $URL"; \
     wget --https-only --max-redirect=3 --no-verbose -O /tmp/blender.tar.xz "$URL" || \
     curl -fsSLo /tmp/blender.tar.xz --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 -L "$URL"
 
@@ -38,11 +42,11 @@ RUN mkdir -p /opt/blender && \
     chmod +r /opt/blender/render.py
 
 # Verify Blender installation (just check file exists, don't run it as it needs X11)
-RUN test -f /opt/blender-4.0.0-linux-x64/blender && \
-    test -x /opt/blender-4.0.0-linux-x64/blender && \
-    ls -lh /opt/blender-4.0.0-linux-x64/blender && \
+RUN test -f ${BLENDER_DIR}/blender && \
+    test -x ${BLENDER_DIR}/blender && \
+    ls -lh ${BLENDER_DIR}/blender && \
     test -L /usr/local/bin/blender && \
-    echo "Blender installed successfully"
+    echo "Blender ${BLENDER_VERSION} installed successfully"
 
 # Switch back to default user
 USER user
