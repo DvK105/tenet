@@ -36,9 +36,9 @@ export const renderJob = inngest.createFunction(
       auth: { persistSession: false },
     })
 
-    // Step 1: Download file, setup sandbox, get frame range, and render first batch
+    // Step 1: Download file and setup sandbox (quick setup step)
     const { sandboxId, tmpDir, frameStart, frameEnd, framesPerBatch } = await step.run(
-      "download-and-start-render",
+      "download-and-setup",
       async () => {
         // Download file
         const { data, error } = await supabase.storage
@@ -144,42 +144,9 @@ except Exception as e:
 
         console.log("[render-job] Frame range:", { frameStart, frameEnd })
 
-        // Render first batch immediately (50 frames per batch)
-        const framesPerBatch = 50
-        const firstBatchEnd = Math.min(frameStart + framesPerBatch - 1, frameEnd)
-        
-        const renderScriptPath = `${dir}/render_batch_0.py`
-        const renderScript = `import bpy
-import os
-
-# File is already loaded by Blender -b flag
-s = bpy.context.scene
-frames_dir = r'${framesDir}'
-s.render.filepath = os.path.join(frames_dir, 'frame_')
-
-start_frame = ${frameStart}
-end_frame = ${firstBatchEnd}
-s.frame_start = start_frame
-s.frame_end = end_frame
-
-print(f"Rendering frames {start_frame} to {end_frame}")
-bpy.ops.render.render(animation=True)
-print(f"Render complete: frames {start_frame} to {end_frame}")
-`
-        await sandbox.files.write(renderScriptPath, renderScript)
-
-        // Render first batch and wait for completion
-        // Disable timeout for long renders (0 = no timeout)
-        const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
-        console.log("[render-job] Starting first batch render: frames", frameStart, "to", firstBatchEnd)
-        
-        const renderResult = await sandbox.commands.run(fullBlenderCmd, { timeoutMs: 0 })
-        console.log("[render-job] First batch complete:", renderResult.stdout)
-
-        // Check frame count
-        const checkFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | wc -l`)
-        const frameCount = parseInt(checkFrames.stdout.trim())
-        console.log("[render-job] Frames rendered so far:", frameCount)
+        // Don't render yet - just setup. Rendering will happen in next steps
+        // This keeps the first step quick to avoid timeout
+        const framesPerBatch = 20
 
         // Don't kill sandbox - we'll reconnect to it in next steps
         // Note: E2B sandboxes may timeout after inactivity, but we'll try to reconnect
@@ -194,13 +161,17 @@ print(f"Render complete: frames {start_frame} to {end_frame}")
       },
     )
 
-    // Step 2+: Continue rendering in batches, creating new steps every 4 minutes
-    let currentFrame = frameStart + framesPerBatch - 1
-    let stepCount = 1
-
+    // Step 2+: Render in batches, creating new steps every 2 minutes
+    // Start rendering immediately, then create checkpoints between batches
+    let currentFrame = frameStart - 1 // Start from before first frame
+    let stepCount = 0 // Start from 0 for first batch
+    
     while (currentFrame < frameEnd) {
-      // Sleep for 4 minutes to create a checkpoint and avoid timeout
-      await step.sleep(`checkpoint-${stepCount}`, "4m")
+      // For first batch, don't sleep - start immediately
+      // For subsequent batches, sleep 2 minutes to create checkpoint
+      if (stepCount > 0) {
+        await step.sleep(`checkpoint-${stepCount}`, "2m")
+      }
       
       const nextBatchEnd = Math.min(currentFrame + framesPerBatch, frameEnd)
       const batchStart = currentFrame + 1
