@@ -3,13 +3,8 @@ import { createClient } from "@supabase/supabase-js"
 import { inngest } from "@/inngest/client"
 
 export const runtime = "nodejs"
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: "50mb",
-    },
-  },
-}
+// Note: File size limits are handled in the handler below
+// Next.js App Router doesn't use the config export
 
 const ALLOWED_3D_EXTENSIONS = [
   "blend",
@@ -53,6 +48,15 @@ export async function POST(req: Request) {
     if (!(ALLOWED_3D_EXTENSIONS as readonly string[]).includes(ext)) {
       return NextResponse.json(
         { error: "Only 3D files are allowed", allowed: ALLOWED_3D_EXTENSIONS },
+        { status: 400 },
+      )
+    }
+
+    // Check file size (50MB limit)
+    const maxSize = 50 * 1024 * 1024 // 50MB in bytes
+    if (file.size > maxSize) {
+      return NextResponse.json(
+        { error: `File size exceeds 50MB limit. File size: ${(file.size / 1024 / 1024).toFixed(2)}MB` },
         { status: 400 },
       )
     }

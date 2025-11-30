@@ -114,6 +114,7 @@ export function UploadSection() {
           <input
             type="file"
             multiple
+            accept=".blend,.fbx,.obj,.stl,.gltf,.glb,.c4d,.ma,.mb,.hip"
             onChange={handleFileInput}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
           />

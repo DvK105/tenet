@@ -125,6 +125,7 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
               type="file" 
               className="sr-only" 
               multiple 
+              accept=".blend,.fbx,.obj,.stl,.gltf,.glb,.c4d,.ma,.mb,.hip"
               onChange={handleChange}
             />
             
