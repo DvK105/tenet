@@ -6,22 +6,15 @@ const BLENDER_BIN = "/opt/blender-4.5.0-linux-x64/blender"
 
 // Inngest function that will orchestrate a render job when a file is uploaded.
 // Flow:
-// 1. Download the uploaded .blend file from the `renders-input` bucket using the storage path from the event.
-// 2. Start an e2b sandbox with template and create a secure temp directory.
-// 3. Copy the .blend file into the sandbox filesystem.
-// 4. Use Blender to auto-detect the scene frame range and render an image sequence (with periodic checkpoints every 4 minutes).
-// 5. Use ffmpeg (24 fps) to encode the frames into an MP4.
-// 6. Upload the MP4 to the `render-output` bucket.
-// 7. Return metadata (and later, optionally update a jobs table).
+// 1. Download the uploaded .blend file from Supabase storage
+// 2. Start rendering immediately in frame batches
+// 3. Every 4 minutes, create a new step to continue rendering (avoiding timeouts)
+// 4. Once all frames are rendered, encode with ffmpeg and upload
 export const renderJob = inngest.createFunction(
   { id: "render-job" },
   { event: "render/uploaded" },
   async ({ event, step }) => {
     const { id, filename } = event.data as { id: string; filename: string }
-
-    await step.run("log-render-job-received", async () => {
-      console.log("[render-job] received event", { id, filename })
-    })
 
     const supabaseUrl =
       process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
@@ -43,10 +36,11 @@ export const renderJob = inngest.createFunction(
       auth: { persistSession: false },
     })
 
-    // Step 1: Download the input file from Supabase storage as an ArrayBuffer
-    const blendArrayBuffer = await step.run(
-      "download-input-from-supabase",
+    // Step 1: Download file, setup sandbox, get frame range, and render first batch
+    const { sandboxId, tmpDir, frameStart, frameEnd, framesPerBatch } = await step.run(
+      "download-and-start-render",
       async () => {
+        // Download file
         const { data, error } = await supabase.storage
           .from(inputBucket)
           .download(id)
@@ -59,158 +53,256 @@ export const renderJob = inngest.createFunction(
           )
         }
 
-        const arrayBuffer = await data.arrayBuffer()
-        // Ensure we treat this as a standard ArrayBuffer for the sandbox API
-        return arrayBuffer as ArrayBuffer
-      },
-    )
+        const blendArrayBuffer = await data.arrayBuffer()
 
-    // Step 2: Create checkpoint to avoid timeout
-    await step.sleep("checkpoint-1", "4m")
-
-    // Step 3: Create e2b sandbox, setup, render, encode, and upload
-    // Following eduvids architecture: keep sandbox operations in one step
-    // but use step.sleep() calls to create periodic checkpoints
-    // The sandbox stays alive within the step.run() execution context
-    const videoPath = await step.run("create-sandbox-and-render", async () => {
-      let sandbox: Sandbox | null = null
-      let tmpDir: string | null = null
-
-      try {
-        // Create sandbox with template
-        sandbox = await Sandbox.create("blender-renders")
+        // Create sandbox immediately
+        const sandbox = await Sandbox.create("blender-renders")
         console.log("[render-job] sandbox created", { sandboxId: sandbox.sandboxId })
 
-        // Create a secure temp directory
+        // Create temp directory
         const tmpResult = await sandbox.commands.run(
           "mktemp -d /tmp/tenet-XXXXXX",
         )
         const dir = tmpResult.stdout.trim()
         if (!dir || !dir.startsWith("/tmp/")) {
+          await sandbox.kill()
           throw new Error("Failed to create secure temp directory in sandbox")
         }
-        tmpDir = dir
 
-        // Write the .blend file into the sandbox
-        const sceneFilePath = `${tmpDir}/scene.blend`
+        // Write blend file
+        const sceneFilePath = `${dir}/scene.blend`
         await sandbox.files.write(sceneFilePath, blendArrayBuffer as ArrayBuffer)
         console.log("[render-job] wrote blend file to sandbox", { sceneFilePath })
 
-        // Verify file was written
-        const verifyFile = await sandbox.commands.run(`test -f "${sceneFilePath}" && echo "exists" || echo "missing"`)
-        if (!verifyFile.stdout.includes("exists")) {
-          throw new Error(`Failed to verify blend file exists at ${sceneFilePath}`)
+        // Verify file was written and check file size
+        const fileInfo = await sandbox.commands.run(`stat -c%s "${sceneFilePath}"`)
+        const fileSize = parseInt(fileInfo.stdout.trim())
+        console.log("[render-job] Blend file size:", fileSize, "bytes")
+
+        if (fileSize === 0) {
+          await sandbox.kill()
+          throw new Error("Blend file is empty or failed to write")
+        }
+
+        // Check if file is a valid blend file (should start with "BLENDER")
+        const fileHeader = await sandbox.commands.run(`head -c 7 "${sceneFilePath}"`)
+        if (!fileHeader.stdout.includes("BLENDER")) {
+          console.warn("[render-job] File header check:", fileHeader.stdout)
+          // Not necessarily an error - could be compressed
         }
 
         // Create frames directory
-        const framesDir = `${tmpDir}/frames`
+        const framesDir = `${dir}/frames`
         await sandbox.commands.run(`mkdir -p "${framesDir}"`)
-        console.log("[render-job] created frames directory", { framesDir })
 
-        // Create a Python script for rendering
-        const renderScriptPath = `${tmpDir}/render.py`
+        // Get frame range from Blender
+        // Note: Blender already loads the file with -b flag, so we don't need to open it again
+        const getFrameRangeScript = `${dir}/get_frames.py`
+        const frameRangeScript = `import bpy
+import json
+import sys
+
+# File is already loaded by Blender -b flag
+try:
+    s = bpy.context.scene
+    frame_start = s.frame_start
+    frame_end = s.frame_end
+    print(json.dumps({"frame_start": frame_start, "frame_end": frame_end}))
+except Exception as e:
+    print(f"Error getting frame range: {e}", file=sys.stderr)
+    sys.exit(1)
+`
+        await sandbox.files.write(getFrameRangeScript, frameRangeScript)
+        
+        console.log("[render-job] Getting frame range from Blender")
+        const frameRangeResult = await sandbox.commands.run(
+          `${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}" --background`
+        )
+        
+        // Check for errors in stderr
+        if (frameRangeResult.stderr && frameRangeResult.stderr.includes("Error") || 
+            frameRangeResult.stderr && frameRangeResult.stderr.includes("File format is not supported")) {
+          console.error("[render-job] Blender error getting frame range:", frameRangeResult.stderr)
+          throw new Error(
+            `Blender cannot open the file. This usually means the file was created with a newer Blender version than 4.5.0. Error: ${frameRangeResult.stderr}`
+          )
+        }
+        
+        let frameStart = 1
+        let frameEnd = 250
+        try {
+          const frameRangeMatch = frameRangeResult.stdout.match(/\{"frame_start":\s*(\d+),\s*"frame_end":\s*(\d+)\}/)
+          if (frameRangeMatch) {
+            frameStart = parseInt(frameRangeMatch[1])
+            frameEnd = parseInt(frameRangeMatch[2])
+          }
+        } catch (e) {
+          console.warn("[render-job] Could not parse frame range, using defaults", e)
+        }
+
+        console.log("[render-job] Frame range:", { frameStart, frameEnd })
+
+        // Render first batch immediately (50 frames per batch)
+        const framesPerBatch = 50
+        const firstBatchEnd = Math.min(frameStart + framesPerBatch - 1, frameEnd)
+        
+        const renderScriptPath = `${dir}/render_batch_0.py`
         const renderScript = `import bpy
 import os
 
-# Get the scene
+# File is already loaded by Blender -b flag
 s = bpy.context.scene
-
-# Set output path
 frames_dir = r'${framesDir}'
 s.render.filepath = os.path.join(frames_dir, 'frame_')
 
-# Render animation
-print(f"Rendering from frame {s.frame_start} to {s.frame_end}")
-print(f"Output path: {s.render.filepath}")
+start_frame = ${frameStart}
+end_frame = ${firstBatchEnd}
+s.frame_start = start_frame
+s.frame_end = end_frame
+
+print(f"Rendering frames {start_frame} to {end_frame}")
 bpy.ops.render.render(animation=True)
-print("Render complete")
+print(f"Render complete: frames {start_frame} to {end_frame}")
 `
         await sandbox.files.write(renderScriptPath, renderScript)
-        console.log("[render-job] created render script", { renderScriptPath })
 
-        // Ensure Blender binary works before invoking xvfb
-        try {
-          const blenderVersion = await sandbox.commands.run(`${BLENDER_BIN} -v`)
-          console.log("[render-job] blender version check:", blenderVersion.stdout)
-        } catch (versionErr: any) {
-          console.error("[render-job] blender version check failed", {
-            message: versionErr?.message,
-            exitCode: versionErr?.exitCode,
-            stdout: versionErr?.stdout,
-            stderr: versionErr?.stderr,
-          })
-          throw new Error(
-            `Blender binary check failed: ${versionErr?.message || "Unknown error"}. Exit code: ${versionErr?.exitCode || "unknown"}. Stdout: ${
-              versionErr?.stdout || "none"
-            }. Stderr: ${versionErr?.stderr || "none"}`
-          )
-        }
-
-        // Build and run a Blender command using the Python script
+        // Render first batch and wait for completion
         const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
+        console.log("[render-job] Starting first batch render: frames", frameStart, "to", firstBatchEnd)
+        
+        const renderResult = await sandbox.commands.run(fullBlenderCmd)
+        console.log("[render-job] First batch complete:", renderResult.stdout)
 
-        console.log("[render-job] executing blender command")
+        // Check frame count
+        const checkFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | wc -l`)
+        const frameCount = parseInt(checkFrames.stdout.trim())
+        console.log("[render-job] Frames rendered so far:", frameCount)
+
+        // Don't kill sandbox - we'll reconnect to it in next steps
+        // Note: E2B sandboxes may timeout after inactivity, but we'll try to reconnect
+
+        return {
+          sandboxId: sandbox.sandboxId,
+          tmpDir: dir,
+          frameStart,
+          frameEnd,
+          framesPerBatch,
+        }
+      },
+    )
+
+    // Step 2+: Continue rendering in batches, creating new steps every 4 minutes
+    let currentFrame = frameStart + framesPerBatch - 1
+    let stepCount = 1
+
+    while (currentFrame < frameEnd) {
+      // Sleep for 4 minutes to create a checkpoint and avoid timeout
+      await step.sleep(`checkpoint-${stepCount}`, "4m")
+      
+      const nextBatchEnd = Math.min(currentFrame + framesPerBatch, frameEnd)
+      const batchStart = currentFrame + 1
+      
+      await step.run(`render-batch-${stepCount}`, async () => {
+        // Try to reconnect to existing sandbox, or create new one if it timed out
+        let sandbox: Sandbox
         try {
-          const renderResult = await sandbox.commands.run(fullBlenderCmd)
-          console.log("[render-job] blender stdout:", renderResult.stdout)
-          console.log("[render-job] blender stderr:", renderResult.stderr)
+          sandbox = await Sandbox.connect(sandboxId)
+          console.log("[render-job] Reconnected to sandbox", { sandboxId })
+        } catch (err) {
+          console.warn("[render-job] Could not reconnect to sandbox, creating new one", err)
+          // If reconnection fails, we'd need to re-download and setup, but for now just throw
+          throw new Error(`Failed to reconnect to sandbox ${sandboxId}. Sandbox may have timed out.`)
+        }
+        
+        try {
+          const sceneFilePath = `${tmpDir}/scene.blend`
+          const framesDir = `${tmpDir}/frames`
+          const renderScriptPath = `${tmpDir}/render_batch_${stepCount}.py`
           
-          // Check if any frames were rendered
+          const renderScript = `import bpy
+import os
+
+# File is already loaded by Blender -b flag
+s = bpy.context.scene
+frames_dir = r'${framesDir}'
+s.render.filepath = os.path.join(frames_dir, 'frame_')
+
+start_frame = ${batchStart}
+end_frame = ${nextBatchEnd}
+s.frame_start = start_frame
+s.frame_end = end_frame
+
+print(f"Rendering frames {start_frame} to {end_frame}")
+bpy.ops.render.render(animation=True)
+print(f"Render complete: frames {start_frame} to {end_frame}")
+`
+          await sandbox.files.write(renderScriptPath, renderScript)
+
+          const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
+          
+          console.log(`[render-job] Rendering batch ${stepCount}: frames ${batchStart} to ${nextBatchEnd}`)
+          const renderResult = await sandbox.commands.run(fullBlenderCmd)
+          console.log(`[render-job] Batch ${stepCount} complete:`, renderResult.stdout)
+          
+          // Check frame count
           const checkFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | wc -l`)
           const frameCount = parseInt(checkFrames.stdout.trim())
-          console.log("[render-job] frames rendered:", frameCount)
+          console.log(`[render-job] Total frames rendered: ${frameCount}`)
           
-          if (frameCount === 0) {
-            throw new Error("No frames were rendered. Check Blender output for errors.")
-          }
-        } catch (err: any) {
-          console.error("[render-job] blender command failed", {
-            message: err?.message,
-            exitCode: err?.exitCode,
-            stdout: err?.stdout,
-            stderr: err?.stderr,
-            rawError: err,
-          })
-          throw new Error(
-            `Blender render failed: ${err?.message || "Unknown error"}. Exit code: ${err?.exitCode || "unknown"}. Stdout: ${err?.stdout || "none"}. Stderr: ${err?.stderr || "none"}`
-          )
+        } finally {
+          // Don't kill sandbox - we need it for next batch or final step
+          // The sandbox will be cleaned up in the final step
         }
+      })
 
-        // After rendering frames, run ffmpeg at 24 fps to produce MP4
+      currentFrame = nextBatchEnd
+      stepCount++
+    }
+
+    // Final step: Encode and upload
+    const videoPath = await step.run("encode-and-upload", async () => {
+      // Reconnect to sandbox
+      let sandbox: Sandbox
+      try {
+        sandbox = await Sandbox.connect(sandboxId)
+        console.log("[render-job] Reconnected to sandbox for encoding", { sandboxId })
+      } catch (err) {
+        throw new Error(`Failed to reconnect to sandbox ${sandboxId} for encoding. Sandbox may have timed out.`)
+      }
+
+      try {
+        const framesDir = `${tmpDir}/frames`
         const outputVideoPath = `${tmpDir}/output.mp4`
         
         // Check frame files before encoding
         const listFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | head -5`)
         console.log("[render-job] sample frame files:", listFrames.stdout)
         
+        // Verify we have frames
+        const checkFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | wc -l`)
+        const frameCount = parseInt(checkFrames.stdout.trim())
+        console.log("[render-job] Total frames to encode:", frameCount)
+        
+        if (frameCount === 0) {
+          throw new Error("No frames were rendered. Cannot encode video.")
+        }
+        
         const ffmpegCmd =
           `ffmpeg -y -framerate 24 -i "${framesDir}/frame_%04d.png" -c:v libx264 -pix_fmt yuv420p -crf 23 "${outputVideoPath}"`
 
         console.log("[render-job] executing ffmpeg command")
-        try {
-          const ffmpegResult = await sandbox.commands.run(ffmpegCmd)
-          console.log("[render-job] ffmpeg stdout:", ffmpegResult.stdout)
-          console.log("[render-job] ffmpeg stderr:", ffmpegResult.stderr)
-          
-          // Verify video was created
-          const verifyVideo = await sandbox.commands.run(`test -f "${outputVideoPath}" && echo "exists" || echo "missing"`)
-          if (!verifyVideo.stdout.includes("exists")) {
-            throw new Error("FFmpeg completed but output video file was not created")
-          }
-          
-          const videoSize = await sandbox.commands.run(`stat -c%s "${outputVideoPath}"`)
-          console.log("[render-job] video file size:", videoSize.stdout.trim(), "bytes")
-        } catch (err: any) {
-          console.error("[render-job] ffmpeg command failed", {
-            message: err?.message,
-            exitCode: err?.exitCode,
-            stdout: err?.stdout,
-            stderr: err?.stderr,
-          })
-          throw new Error(
-            `FFmpeg encoding failed: ${err?.message || "Unknown error"}. Exit code: ${err?.exitCode || "unknown"}. Stderr: ${err?.stderr || "none"}`
-          )
+        const ffmpegResult = await sandbox.commands.run(ffmpegCmd)
+        console.log("[render-job] ffmpeg stdout:", ffmpegResult.stdout)
+        console.log("[render-job] ffmpeg stderr:", ffmpegResult.stderr)
+        
+        // Verify video was created
+        const verifyVideo = await sandbox.commands.run(`test -f "${outputVideoPath}" && echo "exists" || echo "missing"`)
+        if (!verifyVideo.stdout.includes("exists")) {
+          throw new Error("FFmpeg completed but output video file was not created")
         }
+        
+        const videoSize = await sandbox.commands.run(`stat -c%s "${outputVideoPath}"`)
+        console.log("[render-job] video file size:", videoSize.stdout.trim(), "bytes")
 
         // Read the MP4 from the sandbox
         const fileData = (await sandbox.files.read(outputVideoPath)) as unknown as
@@ -235,25 +327,18 @@ print("Render complete")
         return data?.path ?? `jobs/${id}/output.mp4`
       } finally {
         // Cleanup
-        if (sandbox && tmpDir) {
-          try {
-            await sandbox.commands.run(`rm -rf -- "${tmpDir}"`)
-          } catch {
-            // ignore cleanup errors
-          }
+        try {
+          await sandbox.commands.run(`rm -rf -- "${tmpDir}"`)
+        } catch {
+          // ignore cleanup errors
         }
-        if (sandbox) {
-          try {
-            await sandbox.kill()
-          } catch {
-            // ignore
-          }
+        try {
+          await sandbox.kill()
+        } catch {
+          // ignore
         }
       }
     })
-
-    // Step 4: Create final checkpoint
-    await step.sleep("checkpoint-2", "4m")
 
     return {
       ok: true,
