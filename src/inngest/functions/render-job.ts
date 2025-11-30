@@ -115,8 +115,10 @@ except Exception as e:
         await sandbox.files.write(getFrameRangeScript, frameRangeScript)
         
         console.log("[render-job] Getting frame range from Blender")
+        // Use a reasonable timeout for frame range detection (5 minutes should be enough)
         const frameRangeResult = await sandbox.commands.run(
-          `${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}" --background`
+          `${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}" --background`,
+          { timeoutMs: 300000 } // 5 minutes
         )
         
         // Check for errors in stderr
@@ -167,10 +169,11 @@ print(f"Render complete: frames {start_frame} to {end_frame}")
         await sandbox.files.write(renderScriptPath, renderScript)
 
         // Render first batch and wait for completion
+        // Disable timeout for long renders (0 = no timeout)
         const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
         console.log("[render-job] Starting first batch render: frames", frameStart, "to", firstBatchEnd)
         
-        const renderResult = await sandbox.commands.run(fullBlenderCmd)
+        const renderResult = await sandbox.commands.run(fullBlenderCmd, { timeoutMs: 0 })
         console.log("[render-job] First batch complete:", renderResult.stdout)
 
         // Check frame count
@@ -241,7 +244,8 @@ print(f"Render complete: frames {start_frame} to {end_frame}")
           const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
           
           console.log(`[render-job] Rendering batch ${stepCount}: frames ${batchStart} to ${nextBatchEnd}`)
-          const renderResult = await sandbox.commands.run(fullBlenderCmd)
+          // Disable timeout for long renders (0 = no timeout)
+          const renderResult = await sandbox.commands.run(fullBlenderCmd, { timeoutMs: 0 })
           console.log(`[render-job] Batch ${stepCount} complete:`, renderResult.stdout)
           
           // Check frame count
@@ -291,7 +295,8 @@ print(f"Render complete: frames {start_frame} to {end_frame}")
           `ffmpeg -y -framerate 24 -i "${framesDir}/frame_%04d.png" -c:v libx264 -pix_fmt yuv420p -crf 23 "${outputVideoPath}"`
 
         console.log("[render-job] executing ffmpeg command")
-        const ffmpegResult = await sandbox.commands.run(ffmpegCmd)
+        // Disable timeout for video encoding (0 = no timeout)
+        const ffmpegResult = await sandbox.commands.run(ffmpegCmd, { timeoutMs: 0 })
         console.log("[render-job] ffmpeg stdout:", ffmpegResult.stdout)
         console.log("[render-job] ffmpeg stderr:", ffmpegResult.stderr)
         
