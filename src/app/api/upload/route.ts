@@ -3,13 +3,6 @@ import { createClient } from "@supabase/supabase-js"
 import { inngest } from "@/inngest/client"
 
 export const runtime = "nodejs"
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: "50mb",
-    },
-  },
-}
 
 const ALLOWED_3D_EXTENSIONS = [
   "blend",
