@@ -1,0 +1,20 @@
+{
+  "name": "tenet-inngest-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p ."
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "inngest": "^3.46.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "typescript": "^5.0.0",
+    "tsx": "^4.19.0"
+  }
+}
