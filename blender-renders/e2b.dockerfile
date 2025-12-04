@@ -11,12 +11,12 @@ ENV BLENDER_DIR=/opt/blender-4.5.0-linux-x64
 # Switch to root for package installation
 USER root
 
-# Install system dependencies
+# Install system dependencies (including Mesa/EGL for libEGL.so.1)
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     wget xz-utils xvfb xauth ffmpeg \
     libxi6 libxxf86vm1 libxrender1 libxfixes3 \
-    libgl1-mesa-glx libglu1-mesa libgles2-mesa \
+    libgl1-mesa-glx libglu1-mesa libgles2-mesa libegl1 libgbm1 \
     libxrandr2 libxext6 python3 ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
