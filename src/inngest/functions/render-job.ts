@@ -409,7 +409,7 @@ except Exception as e:
           }
 
           // Run Blender render
-          const fullBlenderCmd = `xvfb-run -s "-screen 0 1920x1080x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
+          const fullBlenderCmd = `${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`
 
           console.log(`[render-job] Executing Blender render command for batch ${stepCount}`)
           let renderResult: any
