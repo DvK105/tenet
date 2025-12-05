@@ -347,13 +347,6 @@ except Exception as e:
     let stepCount = 0 // Start from 0 for first batch
 
     while (currentFrame < frameEnd) {
-      // For first batch, don't sleep - start immediately
-      // For subsequent batches, sleep to create checkpoint
-      if (stepCount > 0) {
-        console.log(`[render-job] Creating checkpoint before batch ${stepCount} (sleeping ${CHECKPOINT_INTERVAL})`)
-        await step.sleep(`checkpoint-${stepCount}`, CHECKPOINT_INTERVAL)
-      }
-
       const nextBatchEnd = Math.min(currentFrame + framesPerBatch, frameEnd)
       const batchStart = currentFrame + 1
 
