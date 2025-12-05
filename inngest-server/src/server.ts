@@ -3,14 +3,14 @@ import { serve } from "inngest/express";
 
 // Reuse the existing Inngest client and functions from the main app
 import { inngest } from "../../src/inngest/client";
-import { renderJob } from "../../src/inngest/functions/render-job";
+import { renderJobFunctions } from "../../src/inngest/functions/render-job";
 
 const app = express();
 
 // Create the Inngest HTTP handler
 const inngestHandler = serve({
   client: inngest,
-  functions: [renderJob],
+  functions: renderJobFunctions,
 });
 
 // Mount under /api/inngest to mirror your Vercel route
