@@ -5,6 +5,9 @@ import { Sandbox } from "e2b"
 
 const BLENDER_BIN = "/opt/blender-4.5.0-linux-x64/blender"
 const FRAMES_PER_BATCH = parsePositiveInteger(process.env.RENDER_FRAMES_PER_BATCH, 5)
+// Default render dimensions (will be overridden by scene settings if available)
+const DEFAULT_RENDER_WIDTH = 1920
+const DEFAULT_RENDER_HEIGHT = 1080
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = value ? Number.parseInt(value, 10) : NaN
@@ -271,8 +274,9 @@ except Exception as e:
 
     let frameRangeResult: any
     try {
+      // Use xvfb-run for headless rendering to avoid EGL errors
       frameRangeResult = await sandbox.commands.run(
-        `${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}" --background`,
+        `xvfb-run -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}"`,
         { timeoutMs: RENDER_BATCH_TIMEOUT_MS },
       )
     } catch (err) {
@@ -398,8 +402,10 @@ except Exception as e:
   }
 
   try {
+    // Use xvfb-run for headless rendering to avoid EGL errors
+    // The virtual display size should match or exceed the render resolution
     const renderResult = await sandbox.commands.run(
-      `${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`,
+      `xvfb-run -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`,
       { timeoutMs: RENDER_BATCH_TIMEOUT_MS },
     )
     console.log(`[render-job] Batch ${batchIndex} render stdout:`, renderResult.stdout)
