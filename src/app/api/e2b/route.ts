@@ -14,6 +14,10 @@ const RENDER_SCRIPT_PATH = '/opt/blender/render.py'
 const BUILTIN_TEST_OUTPUT_PATH = '/tmp/test.png'
 // Timeout for Blender commands (280 seconds = 280000ms, leaving buffer before Vercel's 300s maxDuration)
 const BLENDER_TIMEOUT_MS = 280_000
+// Timeout for sandbox operations (30 seconds for creation, file ops, etc.)
+const SANDBOX_OP_TIMEOUT_MS = 30_000
+// Timeout for sandbox creation (60 seconds - can be slow)
+const SANDBOX_CREATE_TIMEOUT_MS = 60_000
 
 // Types
 type RenderMode = 'builtin' | 'upload'
@@ -38,10 +42,28 @@ function jsonError(message: string, status = 400): NextResponse {
   )
 }
 
+// Helper: Wrap async operations with timeout
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  errorMessage: string
+): Promise<T> {
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(errorMessage))
+    }, timeoutMs)
+  })
+  return Promise.race([promise, timeoutPromise])
+}
+
 // Helper: Secure temp directory management inside sandbox
 async function createSecureTmpDir(sandbox: Sandbox): Promise<string> {
   // mktemp -d creates a uniquely named directory with 0700 permissions
-  const result = await sandbox.commands.run('mktemp -d /tmp/tenet-XXXXXX')
+  const result = await withTimeout(
+    sandbox.commands.run('mktemp -d /tmp/tenet-XXXXXX', { timeoutMs: SANDBOX_OP_TIMEOUT_MS }),
+    SANDBOX_OP_TIMEOUT_MS,
+    'Failed to create temp directory: operation timed out'
+  )
   const dir = result.stdout.trim()
   if (!dir || !dir.startsWith('/tmp/')) {
     throw new Error('Failed to create secure temp directory')
@@ -52,10 +74,14 @@ async function createSecureTmpDir(sandbox: Sandbox): Promise<string> {
 async function cleanupTmpDir(sandbox: Sandbox, dir: string | null): Promise<void> {
   if (!dir) return
   try {
-    // Best-effort cleanup
-    await sandbox.commands.run(`rm -rf -- "${dir}"`)
+    // Best-effort cleanup with timeout to prevent hanging
+    await withTimeout(
+      sandbox.commands.run(`rm -rf -- "${dir}"`, { timeoutMs: 5000 }),
+      5000,
+      'Cleanup timed out (non-critical)'
+    )
   } catch {
-    // ignore
+    // ignore cleanup errors
   }
 }
 
@@ -65,7 +91,11 @@ async function readImageAsBase64(
   filePath: string
 ): Promise<string | null> {
   try {
-    const file = await sandbox.files.read(filePath)
+    const file = await withTimeout(
+      sandbox.files.read(filePath),
+      SANDBOX_OP_TIMEOUT_MS,
+      'Failed to read image file: operation timed out'
+    )
     return Buffer.from(file).toString('base64')
   } catch {
     return null
@@ -120,7 +150,11 @@ async function handleBuiltinRender(sandbox: Sandbox, tmpDir: string): Promise<Re
     throw err
   }
   // Copy result from public /tmp into our secure dir before reading, if it exists
-  await sandbox.commands.run(`if [ -f "${BUILTIN_TEST_OUTPUT_PATH}" ]; then cp "${BUILTIN_TEST_OUTPUT_PATH}" "${tmpDir}/test.png"; fi`)
+  await withTimeout(
+    sandbox.commands.run(`if [ -f "${BUILTIN_TEST_OUTPUT_PATH}" ]; then cp "${BUILTIN_TEST_OUTPUT_PATH}" "${tmpDir}/test.png"; fi`, { timeoutMs: SANDBOX_OP_TIMEOUT_MS }),
+    SANDBOX_OP_TIMEOUT_MS,
+    'Failed to copy output file: operation timed out'
+  )
   const imageBase64 = await readImageAsBase64(sandbox, `${tmpDir}/test.png`)
 
   return {
@@ -150,7 +184,11 @@ async function handleUploadRender(
   // Write .blend file to sandbox
   const arrayBuffer = await blendFile.arrayBuffer()
   const sceneFilePath = `${tmpDir}/scene.blend`
-  await sandbox.files.write(sceneFilePath, arrayBuffer)
+  await withTimeout(
+    sandbox.files.write(sceneFilePath, arrayBuffer),
+    SANDBOX_OP_TIMEOUT_MS,
+    `Failed to write blend file to sandbox: operation timed out after ${SANDBOX_OP_TIMEOUT_MS / 1000} seconds. File may be too large.`
+  )
 
   // Execute render command
   const outputPattern = `${tmpDir}/frame_####`
@@ -195,8 +233,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     const contentType = req.headers.get('content-type') || ''
     const isMultipart = contentType.includes('multipart/form-data')
 
-    // Create sandbox
-    sandbox = await Sandbox.create(SANDBOX_ALIAS)
+    // Create sandbox with timeout
+    sandbox = await withTimeout(
+      Sandbox.create(SANDBOX_ALIAS),
+      SANDBOX_CREATE_TIMEOUT_MS,
+      `Failed to create sandbox: operation timed out after ${SANDBOX_CREATE_TIMEOUT_MS / 1000} seconds. Please try again.`
+    )
     // Create a secure, per-request temp directory inside sandbox
     tmpDir = await createSecureTmpDir(sandbox)
 
@@ -218,9 +260,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       // Clean up temp dir first
       await cleanupTmpDir(sandbox, tmpDir)
       try {
-        await sandbox.kill()
+        // Kill sandbox with timeout to prevent hanging
+        await withTimeout(
+          sandbox.kill(),
+          10000, // 10 second timeout for cleanup
+          'Sandbox cleanup timed out (non-critical)'
+        )
       } catch {
-        // Ignore cleanup errors
+        // Ignore cleanup errors - sandbox will be cleaned up by E2B eventually
       }
     }
   }
