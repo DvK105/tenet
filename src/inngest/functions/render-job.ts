@@ -4,7 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { Sandbox } from "e2b"
 
 const BLENDER_BIN = "/opt/blender-4.5.0-linux-x64/blender"
-const FRAMES_PER_BATCH = parsePositiveInteger(process.env.RENDER_FRAMES_PER_BATCH, 5)
+// Reduced frames per batch for faster processing and lower timeout risk
+const FRAMES_PER_BATCH = parsePositiveInteger(process.env.RENDER_FRAMES_PER_BATCH, 2)
 // Low resolution rendering for faster processing (640x480)
 // Can be overridden via environment variables: RENDER_WIDTH, RENDER_HEIGHT
 const DEFAULT_RENDER_WIDTH = parsePositiveInteger(process.env.RENDER_WIDTH, 640)
