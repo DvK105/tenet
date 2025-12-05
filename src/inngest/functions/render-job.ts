@@ -5,9 +5,10 @@ import { Sandbox } from "e2b"
 
 const BLENDER_BIN = "/opt/blender-4.5.0-linux-x64/blender"
 const FRAMES_PER_BATCH = parsePositiveInteger(process.env.RENDER_FRAMES_PER_BATCH, 5)
-// Default render dimensions (will be overridden by scene settings if available)
-const DEFAULT_RENDER_WIDTH = 1920
-const DEFAULT_RENDER_HEIGHT = 1080
+// Low resolution rendering for faster processing (640x480)
+// Can be overridden via environment variables: RENDER_WIDTH, RENDER_HEIGHT
+const DEFAULT_RENDER_WIDTH = parsePositiveInteger(process.env.RENDER_WIDTH, 640)
+const DEFAULT_RENDER_HEIGHT = parsePositiveInteger(process.env.RENDER_HEIGHT, 480)
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = value ? Number.parseInt(value, 10) : NaN
@@ -19,7 +20,9 @@ function parseTimeout(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const RENDER_BATCH_TIMEOUT_MS = parseTimeout(process.env.RENDER_BATCH_TIMEOUT_MS, 120_000)
+// Increased default timeout for batch rendering (5 minutes)
+// Complex renders can take longer, especially with multiple frames
+const RENDER_BATCH_TIMEOUT_MS = parseTimeout(process.env.RENDER_BATCH_TIMEOUT_MS, 300_000)
 const ENCODE_TIMEOUT_MS = parseTimeout(process.env.RENDER_ENCODE_TIMEOUT_MS, 300_000)
 
 type SupabaseContext = {
@@ -379,13 +382,18 @@ try:
     s = bpy.context.scene
     frames_dir = r'${framesDir}'
     s.render.filepath = os.path.join(frames_dir, 'frame_')
-
+    
+    # Set low resolution for faster rendering
+    s.render.resolution_x = ${DEFAULT_RENDER_WIDTH}
+    s.render.resolution_y = ${DEFAULT_RENDER_HEIGHT}
+    s.render.resolution_percentage = 100
+    
     start_frame = ${batchStart}
     end_frame = ${batchEnd}
     s.frame_start = start_frame
     s.frame_end = end_frame
 
-    print(f"Rendering frames ${batchStart} to ${batchEnd}")
+    print(f"Rendering frames ${batchStart} to ${batchEnd} at {s.render.resolution_x}x{s.render.resolution_y}")
     bpy.ops.render.render(animation=True)
     print(f"Render complete: frames ${batchStart} to ${batchEnd}")
     sys.exit(0)
@@ -413,15 +421,26 @@ except Exception as e:
       console.log(`[render-job] Batch ${batchIndex} render stderr:`, renderResult.stderr)
     }
   } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('Timeout') || errorMessage.includes('timed out')
+    
     logError("blender-render", err, {
       batchIndex,
       frameRange: `${batchStart}-${batchEnd}`,
       stdout: (err as any)?.stdout,
       stderr: (err as any)?.stderr,
       exitCode: (err as any)?.exitCode,
+      isTimeout,
     })
+    
+    if (isTimeout) {
+      throw new Error(
+        `Blender render timed out for batch ${batchIndex} (frames ${batchStart}-${batchEnd}) after ${RENDER_BATCH_TIMEOUT_MS / 1000} seconds. The render may be too complex. Consider reducing frames per batch or render resolution.`
+      )
+    }
+    
     throw new Error(
-      `Blender render failed for batch ${batchIndex} (frames ${batchStart}-${batchEnd}): ${err instanceof Error ? err.message : String(err)}. Exit code: ${(err as any)?.exitCode || "unknown"}. Stderr: ${(err as any)?.stderr || "none"}`,
+      `Blender render failed for batch ${batchIndex} (frames ${batchStart}-${batchEnd}): ${errorMessage}. Exit code: ${(err as any)?.exitCode || "unknown"}. Stderr: ${(err as any)?.stderr || "none"}`,
     )
   }
 
@@ -640,6 +659,8 @@ export const renderJob = inngest.createFunction(
       } satisfies RenderBatchEventData,
     })
 
+    console.log(`[render-job] Setup complete. Dispatched first batch event. Total batches: ${totalBatches}`)
+
     return {
       ok: true,
       id,
@@ -649,6 +670,7 @@ export const renderJob = inngest.createFunction(
       frameStart,
       frameEnd,
       totalBatches,
+      message: `Render job setup complete. Processing ${totalBatches} batches asynchronously. Check Inngest dashboard for progress.`,
     }
   },
 )
@@ -672,12 +694,17 @@ export const processRenderBatch = inngest.createFunction(
       outputBucket,
     } = data
 
+    console.log(`[render-job] Processing batch ${batchIndex}/${totalBatches - 1}: frames ${batchStart}-${batchEnd}`)
+    
     await step.run(`render-batch-${batchIndex}`, () =>
       renderBatchStep({ sandboxId, tmpDir, batchIndex, batchStart, batchEnd }),
     )
 
+    console.log(`[render-job] Batch ${batchIndex} completed successfully`)
+
     const nextStart = batchEnd + 1
     if (nextStart <= frameEnd) {
+      console.log(`[render-job] Dispatching next batch: ${batchIndex + 1}/${totalBatches - 1} (frames ${nextStart}-${Math.min(nextStart + framesPerBatch - 1, frameEnd)})`)
       const nextBatchEnd = Math.min(nextStart + framesPerBatch - 1, frameEnd)
       await step.sendEvent(`render-batch-${batchIndex + 1}`, {
         name: "render/process-batch",
@@ -705,6 +732,8 @@ export const processRenderBatch = inngest.createFunction(
       }
     }
 
+    console.log(`[render-job] All batches completed. Dispatching finalize event.`)
+    
     await step.sendEvent("render-finalize", {
       name: "render/finalize",
       data: {
@@ -720,6 +749,7 @@ export const processRenderBatch = inngest.createFunction(
       ok: true,
       id,
       batchesCompleted: totalBatches,
+      message: `All ${totalBatches} batches completed. Finalization in progress.`,
     }
   },
 )
@@ -731,11 +761,14 @@ export const finalizeRenderJob = inngest.createFunction(
     const data = event.data as RenderFinalizeEventData
     const { id, filename, sandboxId, tmpDir, outputBucket: eventOutputBucket } = data
 
+    console.log(`[render-job] Finalizing render job for: ${filename} (id: ${id})`)
+
     const { supabase, outputBucket: envOutputBucket } = createSupabaseContext()
     const targetBucket = eventOutputBucket || envOutputBucket
 
     let outputVideoPath: string
     try {
+      console.log(`[render-job] Starting encoding and upload step`)
       outputVideoPath = await step.run("encode-and-upload", () =>
         encodeAndUploadStep({
           sandboxId,
@@ -745,7 +778,9 @@ export const finalizeRenderJob = inngest.createFunction(
           supabase,
         }),
       )
+      console.log(`[render-job] Encoding complete. Video uploaded to: ${outputVideoPath}`)
     } finally {
+      console.log(`[render-job] Cleaning up sandbox: ${sandboxId}`)
       await cleanupSandboxById(sandboxId, tmpDir)
     }
 
@@ -757,6 +792,7 @@ export const finalizeRenderJob = inngest.createFunction(
       filename,
       outputBucket: targetBucket,
       outputPath: outputVideoPath,
+      message: `Render job completed successfully. Video available at: ${outputVideoPath}`,
     }
   },
 )
