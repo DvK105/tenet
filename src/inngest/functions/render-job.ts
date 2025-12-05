@@ -1,10 +1,63 @@
 import { inngest } from "../client"
 import { createClient } from "@supabase/supabase-js"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { Sandbox } from "e2b"
 
 const BLENDER_BIN = "/opt/blender-4.5.0-linux-x64/blender"
-const FRAMES_PER_BATCH = 20 // Smaller batches = faster steps = less timeout risk
-const CHECKPOINT_INTERVAL = "2m" // Checkpoint every 2 minutes
+const FRAMES_PER_BATCH = 5 // Keep batches small so each invocation stays within function timeout
+
+function parseTimeout(value: string | undefined, fallback: number): number {
+  const parsed = value ? Number(value) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+const RENDER_BATCH_TIMEOUT_MS = parseTimeout(process.env.RENDER_BATCH_TIMEOUT_MS, 120_000)
+const ENCODE_TIMEOUT_MS = parseTimeout(process.env.RENDER_ENCODE_TIMEOUT_MS, 300_000)
+
+type SupabaseContext = {
+  supabase: SupabaseClient<any, any, any>
+  inputBucket: string
+  outputBucket: string
+}
+
+type RenderBatchEventData = {
+  id: string
+  filename: string
+  sandboxId: string
+  tmpDir: string
+  frameEnd: number
+  batchStart: number
+  batchEnd: number
+  batchIndex: number
+  framesPerBatch: number
+  totalBatches: number
+  outputBucket: string
+}
+
+type RenderFinalizeEventData = {
+  id: string
+  filename: string
+  sandboxId: string
+  tmpDir: string
+  outputBucket: string
+}
+
+function createSupabaseContext(): SupabaseContext {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
+  const inputBucket = process.env.SUPABASE_INPUT_BUCKET_NAME || "renders-input"
+  const outputBucket = process.env.SUPABASE_OUTPUT_BUCKET_NAME || "render-output"
+
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error("Supabase environment variables are not configured")
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: { persistSession: false },
+  })
+
+  return { supabase, inputBucket, outputBucket }
+}
 
 // Helper function to log errors with context
 function logError(step: string, error: any, context?: Record<string, any>) {
