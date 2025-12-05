@@ -12,6 +12,8 @@ const DEFAULT_FRAME = 1
 const RENDER_SCRIPT_PATH = '/opt/blender/render.py'
 // Builtin render script writes to /tmp; we will copy the result into a secure dir before reading
 const BUILTIN_TEST_OUTPUT_PATH = '/tmp/test.png'
+// Timeout for Blender commands (280 seconds = 280000ms, leaving buffer before Vercel's 300s maxDuration)
+const BLENDER_TIMEOUT_MS = 280_000
 
 // Types
 type RenderMode = 'builtin' | 'upload'
@@ -107,7 +109,16 @@ function buildRenderCommand(
 // Handler: Built-in test render
 async function handleBuiltinRender(sandbox: Sandbox, tmpDir: string): Promise<RenderResponse> {
   const cmd = `xvfb-run -s "-screen 0 ${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}x24" ${BLENDER_BIN} -b -P ${RENDER_SCRIPT_PATH}`
-  const result = await sandbox.commands.run(cmd)
+  let result
+  try {
+    result = await sandbox.commands.run(cmd, { timeoutMs: BLENDER_TIMEOUT_MS })
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+    if (errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
+      throw new Error(`Render operation timed out after ${BLENDER_TIMEOUT_MS / 1000} seconds. The render may be too complex for the current timeout limit.`)
+    }
+    throw err
+  }
   // Copy result from public /tmp into our secure dir before reading, if it exists
   await sandbox.commands.run(`if [ -f "${BUILTIN_TEST_OUTPUT_PATH}" ]; then cp "${BUILTIN_TEST_OUTPUT_PATH}" "${tmpDir}/test.png"; fi`)
   const imageBase64 = await readImageAsBase64(sandbox, `${tmpDir}/test.png`)
@@ -144,7 +155,16 @@ async function handleUploadRender(
   // Execute render command
   const outputPattern = `${tmpDir}/frame_####`
   const cmd = buildRenderCommand(width, height, sceneFilePath, outputPattern, frame)
-  const result = await sandbox.commands.run(cmd)
+  let result
+  try {
+    result = await sandbox.commands.run(cmd, { timeoutMs: BLENDER_TIMEOUT_MS })
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+    if (errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
+      throw new Error(`Render operation timed out after ${BLENDER_TIMEOUT_MS / 1000} seconds. The render may be too complex for the current timeout limit.`)
+    }
+    throw err
+  }
 
   // Read rendered output
   const outputPath = getOutputFilePath(tmpDir, frame)

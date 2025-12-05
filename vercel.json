@@ -5,6 +5,9 @@
     },
     "src/app/api/upload/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/e2b/route.ts": {
+      "maxDuration": 300
     }
   }
 }
