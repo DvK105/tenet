@@ -4,8 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { Sandbox } from "e2b"
 
 const BLENDER_BIN = "/opt/blender-4.5.0-linux-x64/blender"
-// Reduced frames per batch for faster processing and lower timeout risk
-const FRAMES_PER_BATCH = parsePositiveInteger(process.env.RENDER_FRAMES_PER_BATCH, 2)
+// Reduced frames per batch to 1 to minimize memory usage and prevent OOM (exit code 137)
+const FRAMES_PER_BATCH = parsePositiveInteger(process.env.RENDER_FRAMES_PER_BATCH, 1)
 // Low resolution rendering for faster processing (640x480)
 // Can be overridden via environment variables: RENDER_WIDTH, RENDER_HEIGHT
 const DEFAULT_RENDER_WIDTH = parsePositiveInteger(process.env.RENDER_WIDTH, 640)
@@ -384,22 +384,39 @@ try:
     frames_dir = r'${framesDir}'
     s.render.filepath = os.path.join(frames_dir, 'frame_')
     
-    # Set low resolution for faster rendering
+    # Set low resolution for faster rendering and lower memory usage
     s.render.resolution_x = ${DEFAULT_RENDER_WIDTH}
     s.render.resolution_y = ${DEFAULT_RENDER_HEIGHT}
     s.render.resolution_percentage = 100
+    
+    # Memory optimization: Use smaller tile size to reduce peak memory usage
+    # Smaller tiles = less memory per tile, but slightly slower rendering
+    s.render.tile_x = 64
+    s.render.tile_y = 64
+    
+    # Limit threads to reduce memory pressure (use 2 threads max)
+    # This helps prevent OOM by reducing parallel memory usage
+    import multiprocessing
+    max_threads = min(2, multiprocessing.cpu_count())
+    s.render.threads = max_threads
+    s.render.threads_mode = 'AUTO'
+    
+    # Disable unnecessary features that consume memory
+    s.render.use_persistent_data = False
     
     start_frame = ${batchStart}
     end_frame = ${batchEnd}
     s.frame_start = start_frame
     s.frame_end = end_frame
 
-    print(f"Rendering frames ${batchStart} to ${batchEnd} at {s.render.resolution_x}x{s.render.resolution_y}")
+    print(f"Rendering frames ${batchStart} to ${batchEnd} at {s.render.resolution_x}x{s.render.resolution_y} (tiles: {s.render.tile_x}x{s.render.tile_y}, threads: {s.render.threads})")
     bpy.ops.render.render(animation=True)
     print(f"Render complete: frames ${batchStart} to ${batchEnd}")
     sys.exit(0)
 except Exception as e:
     print(f"Error during rendering: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
     sys.exit(1)
 `
 
@@ -413,8 +430,10 @@ except Exception as e:
   try {
     // Use xvfb-run with auto-display selection for headless rendering to avoid EGL errors
     // The virtual display size should match or exceed the render resolution
+    // Use --threads 2 to limit CPU threads and reduce parallel memory usage
+    // Memory optimizations are also applied in the Python render script (tile size, thread limits)
     const renderResult = await sandbox.commands.run(
-      `xvfb-run -a -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`,
+      `xvfb-run -a -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}" --threads 2`,
       { timeoutMs: RENDER_BATCH_TIMEOUT_MS },
     )
     console.log(`[render-job] Batch ${batchIndex} render stdout:`, renderResult.stdout)
@@ -423,16 +442,26 @@ except Exception as e:
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err)
+    const exitCode = (err as any)?.exitCode
     const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('Timeout') || errorMessage.includes('timed out')
+    // Exit code 137 = SIGKILL, typically from OOM killer (128 + 9)
+    const isOOM = exitCode === 137 || exitCode === '137'
     
     logError("blender-render", err, {
       batchIndex,
       frameRange: `${batchStart}-${batchEnd}`,
       stdout: (err as any)?.stdout,
       stderr: (err as any)?.stderr,
-      exitCode: (err as any)?.exitCode,
+      exitCode,
       isTimeout,
+      isOOM,
     })
+    
+    if (isOOM) {
+      throw new Error(
+        `Blender render was killed due to out-of-memory (OOM) for batch ${batchIndex} (frames ${batchStart}-${batchEnd}). Exit code: 137. This usually means the render is too complex for available memory. Try: reducing render resolution, simplifying the scene, or using a scene with fewer objects/materials.`
+      )
+    }
     
     if (isTimeout) {
       throw new Error(
@@ -441,7 +470,7 @@ except Exception as e:
     }
     
     throw new Error(
-      `Blender render failed for batch ${batchIndex} (frames ${batchStart}-${batchEnd}): ${errorMessage}. Exit code: ${(err as any)?.exitCode || "unknown"}. Stderr: ${(err as any)?.stderr || "none"}`,
+      `Blender render failed for batch ${batchIndex} (frames ${batchStart}-${batchEnd}): ${errorMessage}. Exit code: ${exitCode || "unknown"}. Stderr: ${(err as any)?.stderr || "none"}`,
     )
   }
 
