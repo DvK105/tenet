@@ -4,12 +4,11 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { Sandbox } from "e2b"
 
 const BLENDER_BIN = "/opt/blender-4.5.0-linux-x64/blender"
-// Reduced frames per batch to 1 to minimize memory usage and prevent OOM (exit code 137)
-const FRAMES_PER_BATCH = parsePositiveInteger(process.env.RENDER_FRAMES_PER_BATCH, 1)
-// Low resolution rendering for faster processing (640x480)
-// Can be overridden via environment variables: RENDER_WIDTH, RENDER_HEIGHT
-const DEFAULT_RENDER_WIDTH = parsePositiveInteger(process.env.RENDER_WIDTH, 640)
-const DEFAULT_RENDER_HEIGHT = parsePositiveInteger(process.env.RENDER_HEIGHT, 480)
+// Render resolution - can be overridden via environment variables: RENDER_WIDTH, RENDER_HEIGHT
+const DEFAULT_RENDER_WIDTH = parsePositiveInteger(process.env.RENDER_WIDTH, 1920)
+const DEFAULT_RENDER_HEIGHT = parsePositiveInteger(process.env.RENDER_HEIGHT, 1080)
+// Frame to render (default: frame 1)
+const RENDER_FRAME = parsePositiveInteger(process.env.RENDER_FRAME, 1)
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = value ? Number.parseInt(value, 10) : NaN
@@ -21,10 +20,8 @@ function parseTimeout(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-// Increased default timeout for batch rendering (5 minutes)
-// Complex renders can take longer, especially with multiple frames
-const RENDER_BATCH_TIMEOUT_MS = parseTimeout(process.env.RENDER_BATCH_TIMEOUT_MS, 300_000)
-const ENCODE_TIMEOUT_MS = parseTimeout(process.env.RENDER_ENCODE_TIMEOUT_MS, 300_000)
+// Timeout for single frame rendering (5 minutes)
+const RENDER_TIMEOUT_MS = parseTimeout(process.env.RENDER_TIMEOUT_MS, 300_000)
 
 type SupabaseContext = {
   supabase: SupabaseClient<any, any, any>
@@ -32,27 +29,6 @@ type SupabaseContext = {
   outputBucket: string
 }
 
-type RenderBatchEventData = {
-  id: string
-  filename: string
-  sandboxId: string
-  tmpDir: string
-  frameEnd: number
-  batchStart: number
-  batchEnd: number
-  batchIndex: number
-  framesPerBatch: number
-  totalBatches: number
-  outputBucket: string
-}
-
-type RenderFinalizeEventData = {
-  id: string
-  filename: string
-  sandboxId: string
-  tmpDir: string
-  outputBucket: string
-}
 
 function createSupabaseContext(): SupabaseContext {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
@@ -131,9 +107,6 @@ function validateBlendFile(arrayBuffer: ArrayBuffer): { valid: boolean; error?: 
 type SetupResult = {
   sandboxId: string
   tmpDir: string
-  frameStart: number
-  frameEnd: number
-  framesPerBatch: number
 }
 
 async function setupRenderJob({
@@ -244,100 +217,9 @@ async function setupRenderJob({
       throw new Error(`Failed to verify blend file: ${err instanceof Error ? err.message : String(err)}`)
     }
 
-    const framesDir = `${tmpDir}/frames`
-    console.log(`[render-job] Creating frames directory: ${framesDir}`)
-    try {
-      await sandbox.commands.run(`mkdir -p "${framesDir}"`)
-    } catch (err) {
-      logError("frames-dir-creation", err, { framesDir })
-      throw new Error(`Failed to create frames directory: ${err instanceof Error ? err.message : String(err)}`)
-    }
-
-    const getFrameRangeScript = `${tmpDir}/get_frames.py`
-    const frameRangeScript = `import bpy
-import json
-import sys
-
-try:
-    s = bpy.context.scene
-    frame_start = s.frame_start
-    frame_end = s.frame_end
-    print(json.dumps({"frame_start": frame_start, "frame_end": frame_end}))
-    sys.exit(0)
-except Exception as e:
-    print(f"Error getting frame range: {e}", file=sys.stderr)
-    sys.exit(1)
-`
-
-    try {
-      await sandbox.files.write(getFrameRangeScript, frameRangeScript)
-    } catch (err) {
-      logError("frame-script-write", err)
-      throw new Error(`Failed to write frame range script: ${err instanceof Error ? err.message : String(err)}`)
-    }
-
-    let frameRangeResult: any
-    try {
-      // Use xvfb-run with auto-display selection for headless rendering to avoid EGL errors
-      frameRangeResult = await sandbox.commands.run(
-        `xvfb-run -a -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}"`,
-        { timeoutMs: RENDER_BATCH_TIMEOUT_MS },
-      )
-    } catch (err) {
-      logError("frame-range-detection", err, {
-        stdout: (err as any)?.stdout,
-        stderr: (err as any)?.stderr,
-      })
-      throw new Error(
-        `Failed to get frame range from Blender: ${err instanceof Error ? err.message : String(err)}`,
-      )
-    }
-
-    if (frameRangeResult.stderr) {
-      const stderrLower = frameRangeResult.stderr.toLowerCase()
-      if (
-        stderrLower.includes("error") ||
-        stderrLower.includes("file format is not supported") ||
-        stderrLower.includes("cannot open")
-      ) {
-        logError("blender-frame-range", new Error(frameRangeResult.stderr), {
-          stdout: frameRangeResult.stdout,
-          stderr: frameRangeResult.stderr,
-        })
-        throw new Error(
-          `Blender cannot open the file. This usually means the file was created with a newer Blender version than 4.5.0. Error: ${frameRangeResult.stderr}`,
-        )
-      }
-    }
-
-    let frameStart = 1
-    let frameEnd = 250
-    try {
-      const frameRangeMatch = frameRangeResult.stdout.match(/\{"frame_start":\s*(\d+),\s*"frame_end":\s*(\d+)\}/)
-      if (frameRangeMatch) {
-        frameStart = parseInt(frameRangeMatch[1])
-        frameEnd = parseInt(frameRangeMatch[2])
-      } else {
-        console.warn(
-          `[render-job] Could not parse frame range from output: ${frameRangeResult.stdout}. Using defaults.`,
-        )
-      }
-    } catch (err) {
-      console.warn("[render-job] Error parsing frame range, using defaults", err)
-    }
-
-    if (frameStart > frameEnd) {
-      throw new Error(`Invalid frame range: start (${frameStart}) > end (${frameEnd})`)
-    }
-
-    console.log(`[render-job] Frame range detected: ${frameStart} to ${frameEnd} (${frameEnd - frameStart + 1} frames)`)
-
     return {
       sandboxId: sandbox.sandboxId,
       tmpDir,
-      frameStart,
-      frameEnd,
-      framesPerBatch: Math.max(1, FRAMES_PER_BATCH),
     }
   } catch (err) {
     await cleanupOnError()
@@ -345,35 +227,31 @@ except Exception as e:
   }
 }
 
-async function renderBatchStep({
+async function renderSingleFrame({
   sandboxId,
   tmpDir,
-  batchIndex,
-  batchStart,
-  batchEnd,
+  frameNumber,
 }: {
   sandboxId: string
   tmpDir: string
-  batchIndex: number
-  batchStart: number
-  batchEnd: number
-}) {
-  console.log(`[render-job] Rendering batch ${batchIndex}: frames ${batchStart} to ${batchEnd}`)
+  frameNumber: number
+}): Promise<string> {
+  console.log(`[render-job] Rendering frame ${frameNumber}`)
 
   let sandbox: Sandbox
   try {
     sandbox = await Sandbox.connect(sandboxId)
     console.log(`[render-job] Reconnected to sandbox: ${sandboxId}`)
   } catch (err) {
-    logError("sandbox-reconnect", err, { sandboxId, batchIndex })
+    logError("sandbox-reconnect", err, { sandboxId, frameNumber })
     throw new Error(
-      `Failed to reconnect to sandbox ${sandboxId} for batch ${batchIndex}. Sandbox may have timed out. Error: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to reconnect to sandbox ${sandboxId} for frame ${frameNumber}. Sandbox may have timed out. Error: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
 
   const sceneFilePath = `${tmpDir}/scene.blend`
-  const framesDir = `${tmpDir}/frames`
-  const renderScriptPath = `${tmpDir}/render_batch_${batchIndex}.py`
+  const outputImagePath = `${tmpDir}/frame_${String(frameNumber).padStart(4, '0')}.png`
+  const renderScriptPath = `${tmpDir}/render_frame.py`
 
   const renderScript = `import bpy
 import os
@@ -381,37 +259,25 @@ import sys
 
 try:
     s = bpy.context.scene
-    frames_dir = r'${framesDir}'
-    s.render.filepath = os.path.join(frames_dir, 'frame_')
     
-    # Set low resolution for faster rendering and lower memory usage
+    # Set render resolution
     s.render.resolution_x = ${DEFAULT_RENDER_WIDTH}
     s.render.resolution_y = ${DEFAULT_RENDER_HEIGHT}
     s.render.resolution_percentage = 100
     
-    # Memory optimization: Use smaller tile size to reduce peak memory usage
-    # Smaller tiles = less memory per tile, but slightly slower rendering
-    s.render.tile_x = 64
-    s.render.tile_y = 64
+    # Set output path for single frame
+    s.render.filepath = r'${outputImagePath}'
     
-    # Limit threads to reduce memory pressure (use 2 threads max)
-    # This helps prevent OOM by reducing parallel memory usage
-    import multiprocessing
-    max_threads = min(2, multiprocessing.cpu_count())
-    s.render.threads = max_threads
-    s.render.threads_mode = 'AUTO'
+    # Set frame to render
+    s.frame_set(${frameNumber})
     
-    # Disable unnecessary features that consume memory
-    s.render.use_persistent_data = False
+    # Render settings - can be optimized later
+    s.render.tile_x = 256
+    s.render.tile_y = 256
     
-    start_frame = ${batchStart}
-    end_frame = ${batchEnd}
-    s.frame_start = start_frame
-    s.frame_end = end_frame
-
-    print(f"Rendering frames ${batchStart} to ${batchEnd} at {s.render.resolution_x}x{s.render.resolution_y} (tiles: {s.render.tile_x}x{s.render.tile_y}, threads: {s.render.threads})")
-    bpy.ops.render.render(animation=True)
-    print(f"Render complete: frames ${batchStart} to ${batchEnd}")
+    print(f"Rendering frame ${frameNumber} at {s.render.resolution_x}x{s.render.resolution_y}")
+    bpy.ops.render.render(write_still=True)
+    print(f"Render complete: frame ${frameNumber}")
     sys.exit(0)
 except Exception as e:
     print(f"Error during rendering: {e}", file=sys.stderr)
@@ -423,22 +289,19 @@ except Exception as e:
   try {
     await sandbox.files.write(renderScriptPath, renderScript)
   } catch (err) {
-    logError("render-script-write", err, { renderScriptPath, batchIndex })
+    logError("render-script-write", err, { renderScriptPath, frameNumber })
     throw new Error(`Failed to write render script: ${err instanceof Error ? err.message : String(err)}`)
   }
 
   try {
-    // Use xvfb-run with auto-display selection for headless rendering to avoid EGL errors
-    // The virtual display size should match or exceed the render resolution
-    // Use --threads 2 to limit CPU threads and reduce parallel memory usage
-    // Memory optimizations are also applied in the Python render script (tile size, thread limits)
+    // Use xvfb-run with auto-display selection for headless rendering
     const renderResult = await sandbox.commands.run(
-      `xvfb-run -a -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}" --threads 2`,
-      { timeoutMs: RENDER_BATCH_TIMEOUT_MS },
+      `xvfb-run -a -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`,
+      { timeoutMs: RENDER_TIMEOUT_MS },
     )
-    console.log(`[render-job] Batch ${batchIndex} render stdout:`, renderResult.stdout)
+    console.log(`[render-job] Frame ${frameNumber} render stdout:`, renderResult.stdout)
     if (renderResult.stderr) {
-      console.log(`[render-job] Batch ${batchIndex} render stderr:`, renderResult.stderr)
+      console.log(`[render-job] Frame ${frameNumber} render stderr:`, renderResult.stderr)
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err)
@@ -448,8 +311,7 @@ except Exception as e:
     const isOOM = exitCode === 137 || exitCode === '137'
     
     logError("blender-render", err, {
-      batchIndex,
-      frameRange: `${batchStart}-${batchEnd}`,
+      frameNumber,
       stdout: (err as any)?.stdout,
       stderr: (err as any)?.stderr,
       exitCode,
@@ -459,139 +321,83 @@ except Exception as e:
     
     if (isOOM) {
       throw new Error(
-        `Blender render was killed due to out-of-memory (OOM) for batch ${batchIndex} (frames ${batchStart}-${batchEnd}). Exit code: 137. This usually means the render is too complex for available memory. Try: reducing render resolution, simplifying the scene, or using a scene with fewer objects/materials.`
+        `Blender render was killed due to out-of-memory (OOM) for frame ${frameNumber}. Exit code: 137. Try reducing render resolution or simplifying the scene.`
       )
     }
     
     if (isTimeout) {
       throw new Error(
-        `Blender render timed out for batch ${batchIndex} (frames ${batchStart}-${batchEnd}) after ${RENDER_BATCH_TIMEOUT_MS / 1000} seconds. The render may be too complex. Consider reducing frames per batch or render resolution.`
+        `Blender render timed out for frame ${frameNumber} after ${RENDER_TIMEOUT_MS / 1000} seconds. The render may be too complex.`
       )
     }
     
     throw new Error(
-      `Blender render failed for batch ${batchIndex} (frames ${batchStart}-${batchEnd}): ${errorMessage}. Exit code: ${exitCode || "unknown"}. Stderr: ${(err as any)?.stderr || "none"}`,
+      `Blender render failed for frame ${frameNumber}: ${errorMessage}. Exit code: ${exitCode || "unknown"}. Stderr: ${(err as any)?.stderr || "none"}`,
     )
   }
 
+  // Verify the image was created
   try {
-    const checkFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | wc -l`)
-    const frameCount = parseInt(checkFrames.stdout.trim())
-    console.log(`[render-job] Frame count after batch ${batchIndex}: ${frameCount}`)
-    if (frameCount === 0 && batchIndex === 0) {
-      throw new Error("No frames were rendered in the first batch. Check Blender output for errors.")
+    const verifyImage = await sandbox.commands.run(`test -f "${outputImagePath}" && echo "exists" || echo "missing"`)
+    if (!verifyImage.stdout.includes("exists")) {
+      throw new Error(`Render completed but output image was not created at ${outputImagePath}`)
     }
+    console.log(`[render-job] Frame ${frameNumber} rendered successfully: ${outputImagePath}`)
   } catch (err) {
-    if (err instanceof Error && err.message.includes("No frames were rendered")) {
-      throw err
-    }
-    logError("frame-count-check", err, { batchIndex })
+    logError("image-verification", err, { frameNumber, outputImagePath })
+    throw new Error(`Failed to verify rendered image: ${err instanceof Error ? err.message : String(err)}`)
   }
+
+  return outputImagePath
 }
 
-async function encodeAndUploadStep({
+async function uploadImage({
   sandboxId,
-  tmpDir,
+  imagePath,
   id,
+  frameNumber,
   outputBucket,
   supabase,
 }: {
   sandboxId: string
-  tmpDir: string
+  imagePath: string
   id: string
+  frameNumber: number
   outputBucket: string
   supabase: SupabaseClient<any, any, any>
 }): Promise<string> {
   let sandbox: Sandbox
   try {
     sandbox = await Sandbox.connect(sandboxId)
-    console.log(`[render-job] Reconnected to sandbox for encoding: ${sandboxId}`)
+    console.log(`[render-job] Reconnected to sandbox for upload: ${sandboxId}`)
   } catch (err) {
-    logError("sandbox-reconnect-encoding", err, { sandboxId })
+    logError("sandbox-reconnect-upload", err, { sandboxId })
     throw new Error(
-      `Failed to reconnect to sandbox ${sandboxId} for encoding. Sandbox may have timed out. Error: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to reconnect to sandbox ${sandboxId} for upload. Sandbox may have timed out. Error: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
 
-  const framesDir = `${tmpDir}/frames`
-  const outputVideoPath = `${tmpDir}/output.mp4`
-
-  let frameCount = 0
-  try {
-    const checkFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | wc -l`)
-    frameCount = parseInt(checkFrames.stdout.trim())
-    console.log(`[render-job] Total frames to encode: ${frameCount}`)
-  } catch (err) {
-    logError("frame-verification", err)
-    throw new Error(`Failed to verify frames: ${err instanceof Error ? err.message : String(err)}`)
-  }
-
-  if (frameCount === 0) {
-    throw new Error("No frames were rendered. Cannot encode video.")
-  }
-
-  try {
-    const listFrames = await sandbox.commands.run(`ls -1 "${framesDir}" | head -5`)
-    console.log("[render-job] Sample frame files:", listFrames.stdout)
-  } catch (err) {
-    console.warn("[render-job] Could not list sample frames:", err)
-  }
-
-  try {
-    const ffmpegResult = await sandbox.commands.run(
-      `ffmpeg -y -framerate 24 -i "${framesDir}/frame_%04d.png" -c:v libx264 -pix_fmt yuv420p -crf 23 "${outputVideoPath}"`,
-      { timeoutMs: ENCODE_TIMEOUT_MS },
-    )
-    console.log("[render-job] FFmpeg stdout:", ffmpegResult.stdout)
-    if (ffmpegResult.stderr) {
-      console.log("[render-job] FFmpeg stderr:", ffmpegResult.stderr)
-    }
-  } catch (err) {
-    logError("ffmpeg-encoding", err, {
-      stdout: (err as any)?.stdout,
-      stderr: (err as any)?.stderr,
-      exitCode: (err as any)?.exitCode,
-    })
-    throw new Error(
-      `FFmpeg encoding failed: ${err instanceof Error ? err.message : String(err)}. Exit code: ${(err as any)?.exitCode || "unknown"}. Stderr: ${(err as any)?.stderr || "none"}`,
-    )
-  }
-
-  try {
-    const verifyVideo = await sandbox.commands.run(`test -f "${outputVideoPath}" && echo "exists" || echo "missing"`)
-    if (!verifyVideo.stdout.includes("exists")) {
-      throw new Error("FFmpeg completed but output video file was not created.")
-    }
-  } catch (err) {
-    logError("video-verification", err)
-    throw new Error(`Failed to verify video file: ${err instanceof Error ? err.message : String(err)}`)
-  }
-
-  try {
-    const videoSize = await sandbox.commands.run(`stat -c%s "${outputVideoPath}"`)
-    console.log(`[render-job] Video file size: ${videoSize.stdout.trim()} bytes`)
-  } catch (err) {
-    console.warn("[render-job] Could not get video file size:", err)
-  }
-
+  // Read the image file from sandbox
   let fileData: ArrayBuffer | Blob | string
   try {
-    fileData = (await sandbox.files.read(outputVideoPath)) as unknown as ArrayBuffer | Blob | string
+    fileData = (await sandbox.files.read(imagePath)) as unknown as ArrayBuffer | Blob | string
   } catch (err) {
-    logError("video-read", err, { outputVideoPath })
-    throw new Error(`Failed to read video file from sandbox: ${err instanceof Error ? err.message : String(err)}`)
+    logError("image-read", err, { imagePath })
+    throw new Error(`Failed to read image file from sandbox: ${err instanceof Error ? err.message : String(err)}`)
   }
 
-  const uploadPath = `jobs/${id}/output.mp4`
+  // Upload to Supabase
+  const frameStr = String(frameNumber).padStart(4, '0')
+  const uploadPath = `jobs/${id}/frame_${frameStr}.png`
   let uploadResult: any
   try {
     uploadResult = await supabase.storage.from(outputBucket).upload(uploadPath, fileData, {
-      contentType: "video/mp4",
+      contentType: "image/png",
       upsert: true,
     })
   } catch (err) {
     logError("supabase-upload", err, { bucket: outputBucket, path: uploadPath })
-    throw new Error(`Failed to upload video to Supabase: ${err instanceof Error ? err.message : String(err)}`)
+    throw new Error(`Failed to upload image to Supabase: ${err instanceof Error ? err.message : String(err)}`)
   }
 
   if (uploadResult.error) {
@@ -604,7 +410,7 @@ async function encodeAndUploadStep({
     )
   }
 
-  console.log(`[render-job] Video uploaded successfully: ${uploadResult.data?.path || uploadPath}`)
+  console.log(`[render-job] Image uploaded successfully: ${uploadResult.data?.path || uploadPath}`)
 
   return uploadResult.data?.path || uploadPath
 }
@@ -630,12 +436,12 @@ async function cleanupSandboxById(sandboxId: string, tmpDir: string) {
 }
 
 export const renderJob = inngest.createFunction(
-  { id: "render-job.start" },
+  { id: "render-job" },
   { event: "render/uploaded" },
   async ({ event, step }) => {
     const { id, filename } = event.data as { id: string; filename: string }
 
-    console.log(`[render-job] Starting workflow for file: ${filename} (id: ${id})`)
+    console.log(`[render-job] Starting single frame render for file: ${filename} (id: ${id})`)
 
     if (!id || !filename) {
       const error = "Missing required event data: id or filename"
@@ -651,180 +457,51 @@ export const renderJob = inngest.createFunction(
 
     const { supabase, inputBucket, outputBucket } = createSupabaseContext()
 
+    // Step 1: Setup - download file, create sandbox
     const setup = await step.run("setup-job", () =>
       setupRenderJob({ id, filename, supabase, inputBucket }),
     )
 
-    const { sandboxId, tmpDir, frameStart, frameEnd, framesPerBatch } = setup
-    const totalFrames = frameEnd - frameStart + 1
+    const { sandboxId, tmpDir } = setup
 
-    if (totalFrames <= 0) {
-      await cleanupSandboxById(sandboxId, tmpDir)
-      return {
-        ok: true,
-        id,
-        filename,
-        totalFrames,
-        totalBatches: 0,
-      }
-    }
+    let imagePath: string
+    let uploadedPath: string
 
-    const totalBatches = Math.ceil(totalFrames / framesPerBatch)
-    const firstBatchEnd = Math.min(frameStart + framesPerBatch - 1, frameEnd)
-
-    await step.sendEvent("render-batch-0", {
-      name: "render/process-batch",
-      data: {
-        id,
-        filename,
-        sandboxId,
-        tmpDir,
-        frameEnd,
-        batchStart: frameStart,
-        batchEnd: firstBatchEnd,
-        batchIndex: 0,
-        framesPerBatch,
-        totalBatches,
-        outputBucket,
-      } satisfies RenderBatchEventData,
-    })
-
-    console.log(`[render-job] Setup complete. Dispatched first batch event. Total batches: ${totalBatches}`)
-
-    return {
-      ok: true,
-      id,
-      filename,
-      sandboxId,
-      tmpDir,
-      frameStart,
-      frameEnd,
-      totalBatches,
-      message: `Render job setup complete. Processing ${totalBatches} batches asynchronously. Check Inngest dashboard for progress.`,
-    }
-  },
-)
-
-export const processRenderBatch = inngest.createFunction(
-  { id: "render-job.process-batch" },
-  { event: "render/process-batch" },
-  async ({ event, step }) => {
-    const data = event.data as RenderBatchEventData
-    const {
-      id,
-      filename,
-      sandboxId,
-      tmpDir,
-      frameEnd,
-      batchStart,
-      batchEnd,
-      batchIndex,
-      framesPerBatch,
-      totalBatches,
-      outputBucket,
-    } = data
-
-    console.log(`[render-job] Processing batch ${batchIndex}/${totalBatches - 1}: frames ${batchStart}-${batchEnd}`)
-    
-    await step.run(`render-batch-${batchIndex}`, () =>
-      renderBatchStep({ sandboxId, tmpDir, batchIndex, batchStart, batchEnd }),
-    )
-
-    console.log(`[render-job] Batch ${batchIndex} completed successfully`)
-
-    const nextStart = batchEnd + 1
-    if (nextStart <= frameEnd) {
-      console.log(`[render-job] Dispatching next batch: ${batchIndex + 1}/${totalBatches - 1} (frames ${nextStart}-${Math.min(nextStart + framesPerBatch - 1, frameEnd)})`)
-      const nextBatchEnd = Math.min(nextStart + framesPerBatch - 1, frameEnd)
-      await step.sendEvent(`render-batch-${batchIndex + 1}`, {
-        name: "render/process-batch",
-        data: {
-          id,
-          filename,
-          sandboxId,
-          tmpDir,
-          frameEnd,
-          batchStart: nextStart,
-          batchEnd: nextBatchEnd,
-          batchIndex: batchIndex + 1,
-          framesPerBatch,
-          totalBatches,
-          outputBucket,
-        } satisfies RenderBatchEventData,
-      })
-
-      return {
-        ok: true,
-        id,
-        batchIndex,
-        dispatchedNextBatch: batchIndex + 1,
-        remainingBatches: Math.max(totalBatches - (batchIndex + 1), 0),
-      }
-    }
-
-    console.log(`[render-job] All batches completed. Dispatching finalize event.`)
-    
-    await step.sendEvent("render-finalize", {
-      name: "render/finalize",
-      data: {
-        id,
-        filename,
-        sandboxId,
-        tmpDir,
-        outputBucket,
-      } satisfies RenderFinalizeEventData,
-    })
-
-    return {
-      ok: true,
-      id,
-      batchesCompleted: totalBatches,
-      message: `All ${totalBatches} batches completed. Finalization in progress.`,
-    }
-  },
-)
-
-export const finalizeRenderJob = inngest.createFunction(
-  { id: "render-job.finalize" },
-  { event: "render/finalize" },
-  async ({ event, step }) => {
-    const data = event.data as RenderFinalizeEventData
-    const { id, filename, sandboxId, tmpDir, outputBucket: eventOutputBucket } = data
-
-    console.log(`[render-job] Finalizing render job for: ${filename} (id: ${id})`)
-
-    const { supabase, outputBucket: envOutputBucket } = createSupabaseContext()
-    const targetBucket = eventOutputBucket || envOutputBucket
-
-    let outputVideoPath: string
     try {
-      console.log(`[render-job] Starting encoding and upload step`)
-      outputVideoPath = await step.run("encode-and-upload", () =>
-        encodeAndUploadStep({
+      // Step 2: Render single frame
+      imagePath = await step.run("render-frame", () =>
+        renderSingleFrame({ sandboxId, tmpDir, frameNumber: RENDER_FRAME }),
+      )
+
+      // Step 3: Upload image to Supabase
+      uploadedPath = await step.run("upload-image", () =>
+        uploadImage({
           sandboxId,
-          tmpDir,
+          imagePath,
           id,
-          outputBucket: targetBucket,
+          frameNumber: RENDER_FRAME,
+          outputBucket,
           supabase,
         }),
       )
-      console.log(`[render-job] Encoding complete. Video uploaded to: ${outputVideoPath}`)
     } finally {
+      // Step 4: Cleanup sandbox
       console.log(`[render-job] Cleaning up sandbox: ${sandboxId}`)
       await cleanupSandboxById(sandboxId, tmpDir)
     }
 
-    console.log(`[render-job] Render job finalized successfully for file: ${filename}`)
+    console.log(`[render-job] Single frame render completed successfully for file: ${filename}`)
 
     return {
       ok: true,
       id,
       filename,
-      outputBucket: targetBucket,
-      outputPath: outputVideoPath,
-      message: `Render job completed successfully. Video available at: ${outputVideoPath}`,
+      frameNumber: RENDER_FRAME,
+      outputBucket,
+      outputPath: uploadedPath,
+      message: `Frame ${RENDER_FRAME} rendered successfully. Image available at: ${uploadedPath}`,
     }
   },
 )
 
-export const renderJobFunctions = [renderJob, processRenderBatch, finalizeRenderJob]
+export const renderJobFunctions = [renderJob]
