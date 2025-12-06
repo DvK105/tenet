@@ -265,15 +265,19 @@ try:
     s.render.resolution_y = ${DEFAULT_RENDER_HEIGHT}
     s.render.resolution_percentage = 100
     
-    # Set output path for single frame
+    # Ensure output directory exists
+    output_dir = os.path.dirname(r'${outputImagePath}')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Set output path for single frame (full path with filename)
     s.render.filepath = r'${outputImagePath}'
     
-    # Set frame to render
-    s.frame_set(${frameNumber})
+    # Set image format settings (Blender 4.5.0 requires media_type before file_format)
+    s.render.image_settings.media_type = 'IMAGE'
+    s.render.image_settings.file_format = 'PNG'
     
-    # Render settings - can be optimized later
-    s.render.tile_x = 256
-    s.render.tile_y = 256
+    # Set frame to render (frame_set() is the recommended method)
+    s.frame_set(${frameNumber})
     
     print(f"Rendering frame ${frameNumber} at {s.render.resolution_x}x{s.render.resolution_y}")
     bpy.ops.render.render(write_still=True)
