@@ -8,10 +8,20 @@ import { template } from './template'
 config({ path: resolve(process.cwd(), '../.env') })
 
 async function main() {
-  await Template.build(template, {
-    alias: 'blender-renders-dev',
-    onBuildLogs: defaultBuildLogger(),
-  });
+  try {
+    await Template.build(template, {
+      alias: 'blender-renders-dev',
+      onBuildLogs: defaultBuildLogger(),
+    });
+    console.log('✅ Template built successfully!');
+  } catch (error) {
+    console.error('❌ Build failed:', error);
+    if (error instanceof Error && error.message.includes('snapshot')) {
+      console.error('\n💡 Tip: This might be a transient E2B API issue. Try running the build again.');
+      console.error('   If it persists, check your E2B API key and network connection.');
+    }
+    process.exit(1);
+  }
 }
 
 main().catch(console.error);

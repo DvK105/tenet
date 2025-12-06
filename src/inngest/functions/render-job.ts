@@ -278,9 +278,9 @@ except Exception as e:
 
     let frameRangeResult: any
     try {
-      // Use xvfb-run for headless rendering to avoid EGL errors
+      // Use xvfb-run with auto-display selection for headless rendering to avoid EGL errors
       frameRangeResult = await sandbox.commands.run(
-        `xvfb-run -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}"`,
+        `xvfb-run -a -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${getFrameRangeScript}"`,
         { timeoutMs: RENDER_BATCH_TIMEOUT_MS },
       )
     } catch (err) {
@@ -411,10 +411,10 @@ except Exception as e:
   }
 
   try {
-    // Use xvfb-run for headless rendering to avoid EGL errors
+    // Use xvfb-run with auto-display selection for headless rendering to avoid EGL errors
     // The virtual display size should match or exceed the render resolution
     const renderResult = await sandbox.commands.run(
-      `xvfb-run -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`,
+      `xvfb-run -a -s "-screen 0 ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}x24" ${BLENDER_BIN} -b "${sceneFilePath}" -P "${renderScriptPath}"`,
       { timeoutMs: RENDER_BATCH_TIMEOUT_MS },
     )
     console.log(`[render-job] Batch ${batchIndex} render stdout:`, renderResult.stdout)

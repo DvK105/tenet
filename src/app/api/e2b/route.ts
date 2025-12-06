@@ -133,12 +133,14 @@ function buildRenderCommand(
   frame: number
 ): string {
   // Quote paths to avoid shell interpretation issues
-  return `xvfb-run -s "-screen 0 ${width}x${height}x24" ${BLENDER_BIN} -b "${blendFile}" -o "${outputPattern}" -f ${frame}`
+  // Use -a flag for auto-display selection to avoid Xvfb startup conflicts
+  return `xvfb-run -a -s "-screen 0 ${width}x${height}x24" ${BLENDER_BIN} -b "${blendFile}" -o "${outputPattern}" -f ${frame}`
 }
 
 // Handler: Built-in test render
 async function handleBuiltinRender(sandbox: Sandbox, tmpDir: string): Promise<RenderResponse> {
-  const cmd = `xvfb-run -s "-screen 0 ${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}x24" ${BLENDER_BIN} -b -P ${RENDER_SCRIPT_PATH}`
+  // Use -a flag for auto-display selection to avoid Xvfb startup conflicts
+  const cmd = `xvfb-run -a -s "-screen 0 ${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}x24" ${BLENDER_BIN} -b -P ${RENDER_SCRIPT_PATH}`
   let result
   try {
     result = await sandbox.commands.run(cmd, { timeoutMs: BLENDER_TIMEOUT_MS })
