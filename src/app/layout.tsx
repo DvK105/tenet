@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Lexend } from "next/font/google";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 
 const mainFont = Lexend({
@@ -23,6 +24,7 @@ export default function RootLayout({
         className={`${mainFont.variable} antialiased`}
       >
         {children}
+        <SpeedInsights />
       </body>
     </html>
   );
