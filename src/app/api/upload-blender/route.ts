@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Sandbox } from "e2b";
-import { writeFile, unlink } from "fs/promises";
-import { join } from "path";
-import { tmpdir } from "os";
 
 export async function POST(request: NextRequest) {
-  let tempFilePath: string | null = null;
   let sandbox: Sandbox | null = null;
 
   try {
@@ -28,48 +24,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Save file temporarily
+    // Read file into memory (no temporary file on disk)
     const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-    tempFilePath = join(tmpdir(), `blender-${Date.now()}-${file.name}`);
-    await writeFile(tempFilePath, buffer);
 
     // Create E2B sandbox with extended timeout to keep it alive for Inngest
     // Timeout is in milliseconds (1 hour = 3600000ms)
-    sandbox = await Sandbox.create({
-      template: "blender-headless-template",
+    sandbox = await Sandbox.create("blender-headless-template", {
       timeoutMs: 3600000, // 1 hour timeout
     });
 
-    // Upload Blender file to sandbox
+    // Upload Blender file to sandbox (use ArrayBuffer directly)
     const sandboxFilePath = "/tmp/uploaded.blend";
-    await sandbox.files.write(sandboxFilePath, buffer);
+    await sandbox.files.write(sandboxFilePath, bytes);
 
     // The extract_frames.py script is already included in the template at /tmp/extract_frames.py
     const scriptSandboxPath = "/tmp/extract_frames.py";
 
-    // Run Blender to extract frame count
-    const process = await sandbox.process.start({
-      cmd: [
-        "blender",
-        "--background",
-        "--python",
-        scriptSandboxPath,
-        "--",
-        sandboxFilePath,
-      ],
+    // Run Blender to extract frame count using E2B SDK v2 commands API
+    const command = `blender --background --python ${scriptSandboxPath} -- ${sandboxFilePath}`;
+    const result = await sandbox.commands.run(command, {
+      timeoutMs: 60000, // 60 seconds timeout for Blender execution
     });
 
-    // Wait for process to complete and capture output
-    const output = await process.wait();
-    
-    if (output.exitCode !== 0) {
-      const errorOutput = output.stderr || output.stdout || "Unknown error";
+    if (result.exitCode !== 0) {
+      const errorOutput = result.stderr || result.stdout || "Unknown error";
       throw new Error(`Blender execution failed: ${errorOutput}`);
     }
 
     // Parse JSON output from Blender script
-    const outputText = output.stdout || "";
+    const outputText = result.stdout || "";
     let frameData;
     
     try {
@@ -105,9 +88,9 @@ export async function POST(request: NextRequest) {
     // Clean up sandbox if it was created
     if (sandbox) {
       try {
-        await sandbox.close();
-      } catch (closeError) {
-        console.error("Error closing sandbox:", closeError);
+        await sandbox.kill();
+      } catch (killError) {
+        console.error("Error killing sandbox:", killError);
       }
     }
 
@@ -117,14 +100,5 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 }
     );
-  } finally {
-    // Clean up temporary file
-    if (tempFilePath) {
-      try {
-        await unlink(tempFilePath);
-      } catch (unlinkError) {
-        console.error("Error deleting temp file:", unlinkError);
-      }
-    }
   }
 }

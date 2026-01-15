@@ -1,0 +1,16 @@
+# This is a config for E2B sandbox template.
+# You can use template ID (g6n13ll5ncuyhw38samn) or template name (blender-headless-template) to create a sandbox:
+
+# Python SDK
+# from e2b import Sandbox, AsyncSandbox
+# sandbox = Sandbox.create("blender-headless-template") # Sync sandbox
+# sandbox = await AsyncSandbox.create("blender-headless-template") # Async sandbox
+
+# JS SDK
+# import { Sandbox } from 'e2b'
+# const sandbox = await Sandbox.create('blender-headless-template')
+
+team_id = "ee84b098-1d9c-4037-bffe-d63b96d1f58c"
+dockerfile = "e2b.Dockerfile"
+template_name = "blender-headless-template"
+template_id = "g6n13ll5ncuyhw38samn"

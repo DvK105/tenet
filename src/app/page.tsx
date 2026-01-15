@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 
 interface FrameData {
   frameStart: number
@@ -24,16 +24,29 @@ const main = () => {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0]
-    if (selectedFile) {
-      if (!selectedFile.name.toLowerCase().endsWith('.blend')) {
-        setError('Please select a .blend file')
-        return
-      }
-      setFile(selectedFile)
+
+    // No file selected (e.g. user cleared the input)
+    if (!selectedFile) {
+      setFile(null)
       setError(null)
-      setFrameData(null)
-      setSandboxId(null)
+      return
     }
+
+    // Invalid extension: clear current file and reset input so state matches UI
+    if (!selectedFile.name.toLowerCase().endsWith('.blend')) {
+      setError('Please select a .blend file')
+      setFile(null)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+      return
+    }
+
+    // Valid file: clear any previous error and update file state
+    setError(null)
+    setFile(selectedFile)
+    setFrameData(null)
+    setSandboxId(null)
   }
 
   const handleUpload = async () => {
@@ -46,15 +59,19 @@ const main = () => {
     setUploadProgress(0)
     setError(null)
 
+    let progressInterval: NodeJS.Timeout | null = null
+
     try {
       const formData = new FormData()
       formData.append('file', file)
 
-      // Simulate progress
-      const progressInterval = setInterval(() => {
+      // Simulate progress with proper cleanup
+      progressInterval = setInterval(() => {
         setUploadProgress((prev) => {
           if (prev >= 90) {
-            clearInterval(progressInterval)
+            if (progressInterval) {
+              clearInterval(progressInterval)
+            }
             return 90
           }
           return prev + 10
@@ -66,7 +83,10 @@ const main = () => {
         body: formData,
       })
 
-      clearInterval(progressInterval)
+      if (progressInterval) {
+        clearInterval(progressInterval)
+        progressInterval = null
+      }
       setUploadProgress(100)
 
       if (!response.ok) {
@@ -82,10 +102,20 @@ const main = () => {
       setFrameData(null)
       setSandboxId(null)
     } finally {
+      if (progressInterval) {
+        clearInterval(progressInterval)
+      }
       setUploading(false)
       setTimeout(() => setUploadProgress(0), 1000)
     }
   }
+
+  // Cleanup progress interval on unmount
+  useEffect(() => {
+    return () => {
+      // This cleanup ensures no interval leaks if component unmounts during upload
+    }
+  }, [])
 
   const handleTriggerRender = async () => {
     if (!sandboxId) {

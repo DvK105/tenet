@@ -35,7 +35,7 @@ export const renderFunction = inngest.createFunction(
       
       // Sandbox is now ready for rendering operations
       // The Blender file is already at /tmp/uploaded.blend
-      // Note: Consider closing the sandbox when done with: await sandbox.close()
+      // Note: Consider killing the sandbox when done with: await sandbox.kill()
     });
   }
 );
