@@ -23,5 +23,8 @@ RUN apt-get update && apt-get install -y \
 # Verify Blender installation
 RUN blender --version || echo "Blender installed"
 
+# Copy the frame extraction script
+COPY extract_frames.py /tmp/extract_frames.py
+
 # Keep container running
 CMD ["sleep", "infinity"]
