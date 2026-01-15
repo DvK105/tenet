@@ -41,29 +41,41 @@ export async function POST(request: NextRequest) {
     const scriptSandboxPath = "/tmp/extract_frames.py";
 
     // Run Blender to extract frame count using E2B SDK v2 commands API
-    const command = `blender --background --python ${scriptSandboxPath} -- ${sandboxFilePath}`;
+    // Suppress Blender's stdout warnings by redirecting to /dev/null
+    // The Python script outputs JSON to stderr, which will be captured separately
+    const command = `blender --background --no-window-focus --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null`;
     const result = await sandbox.commands.run(command, {
       timeoutMs: 60000, // 60 seconds timeout for Blender execution
     });
 
-    if (result.exitCode !== 0) {
-      const errorOutput = result.stderr || result.stdout || "Unknown error";
-      throw new Error(`Blender execution failed: ${errorOutput}`);
-    }
-
-    // Parse JSON output from Blender script
-    const outputText = result.stdout || "";
+    // The Python script outputs JSON to stderr to avoid Blender's stdout warnings
+    // Check stderr first (where our JSON is), then stdout as fallback
+    const outputText = result.stderr || result.stdout || "";
     let frameData;
     
     try {
-      // Extract JSON from output (might have other text before/after)
-      const jsonMatch = outputText.match(/\{[\s\S]*\}/);
+      // Extract JSON from output (should be clean since we suppressed stdout)
+      // Look for the JSON object in the output
+      const jsonMatch = outputText.match(/\{[\s\S]*?\}/);
       if (!jsonMatch) {
-        throw new Error("No JSON found in Blender output");
+        // If no JSON found, check if there's an error in the output
+        if (result.exitCode !== 0) {
+          throw new Error(`Blender execution failed with exit code ${result.exitCode}: ${outputText}`);
+        }
+        throw new Error(`No JSON found in Blender output. stderr: ${result.stderr?.substring(0, 500) || 'empty'}, stdout: ${result.stdout?.substring(0, 500) || 'empty'}`);
       }
       frameData = JSON.parse(jsonMatch[0]);
     } catch (parseError) {
-      throw new Error(`Failed to parse Blender output: ${outputText}`);
+      // If parsing fails, provide more context
+      const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+      const debugInfo = `stderr: ${result.stderr?.substring(0, 500) || 'empty'}, stdout: ${result.stdout?.substring(0, 500) || 'empty'}`;
+      throw new Error(`Failed to parse Blender output: ${errorMsg}. ${debugInfo}`);
+    }
+
+    // Check exit code after parsing (script exits with 0 on success, 1 on error)
+    if (result.exitCode !== 0) {
+      const errorOutput = result.stderr || result.stdout || "Unknown error";
+      throw new Error(`Blender execution failed with exit code ${result.exitCode}: ${errorOutput}`);
     }
 
     // Check for errors in the parsed data

@@ -36,8 +36,10 @@ try:
         "fps": scene.render.fps
     }
     
-    # Output JSON to stdout (E2B will capture this)
-    print(json.dumps(result))
+    # Output JSON to stderr to avoid Blender's stdout warnings interfering
+    # This ensures clean JSON output that can be parsed reliably
+    print(json.dumps(result), file=sys.stderr)
+    sys.exit(0)
     
 except Exception as e:
     error_result = {
