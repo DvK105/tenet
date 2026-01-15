@@ -5,9 +5,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies and Blender
 # Using apt version for stability, but with additional libraries for complex files
+# Also install coreutils for timeout command
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
+    coreutils \
     libgl1-mesa-dev \
     libglu1-mesa \
     libxi6 \

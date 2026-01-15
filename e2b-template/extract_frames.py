@@ -21,50 +21,61 @@ try:
     if not os.path.exists(blend_file):
         raise FileNotFoundError(f"Blend file not found: {blend_file}")
     
-    # For complex files, use multiple strategies to open safely
-    # Strategy 1: Try with minimal loading (fastest, safest for complex files)
+    # For complex files, try to read metadata without fully loading
+    # First, try to get basic info using Blender's file reading without scene loading
     opened = False
     strategies = [
-        # Skip UI, skip textures, skip sounds - fastest and most stable
+        # Most minimal: skip UI, scripts, textures, sounds, and recover data
+        {"filepath": blend_file, "load_ui": False, "use_scripts": False, "use_embedded_data": False},
+        # Skip UI and scripts
         {"filepath": blend_file, "load_ui": False, "use_scripts": False},
         # Skip UI only
         {"filepath": blend_file, "load_ui": False},
-        # Default (fallback)
+        # Default (last resort)
         {"filepath": blend_file}
     ]
     
     for strategy in strategies:
         try:
+            # Clear the scene first to avoid conflicts
+            bpy.ops.wm.read_homefile(app_template="")
             bpy.ops.wm.open_mainfile(**strategy)
             opened = True
             break
-        except Exception:
+        except Exception as e:
+            # If it's a critical error, don't try next strategy
+            if "Segmentation" in str(e) or "fault" in str(e).lower():
+                raise
             # Try next strategy
             continue
     
     if not opened:
         raise RuntimeError("Failed to open blend file with any strategy")
     
-    # Get scene information quickly
-    # Use try-except for each property to handle edge cases
+    # Get scene information quickly with extensive error handling
     scene = bpy.context.scene
     
+    # Try to get frame info with multiple fallbacks
     try:
-        frame_start = int(scene.frame_start)
+        frame_start = int(scene.frame_start) if hasattr(scene, 'frame_start') else 1
     except:
         frame_start = 1
     
     try:
-        frame_end = int(scene.frame_end)
+        frame_end = int(scene.frame_end) if hasattr(scene, 'frame_end') else 250
     except:
-        frame_end = 250  # Default fallback
+        frame_end = 250
     
-    frame_count = frame_end - frame_start + 1
+    # Ensure valid range
+    if frame_start > frame_end:
+        frame_start, frame_end = 1, 250
+    
+    frame_count = max(1, frame_end - frame_start + 1)
     
     try:
-        fps = int(scene.render.fps)
+        fps = int(scene.render.fps) if hasattr(scene, 'render') and hasattr(scene.render, 'fps') else 24
     except:
-        fps = 24  # Default fallback
+        fps = 24
     
     result = {
         "frame_start": frame_start,

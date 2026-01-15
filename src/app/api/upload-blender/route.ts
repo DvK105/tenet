@@ -51,12 +51,21 @@ export async function POST(request: NextRequest) {
     const scriptSandboxPath = "/tmp/extract_frames.py";
     await sandbox.files.write(scriptSandboxPath, scriptContent);
 
+    // Also upload fallback header reader script
+    const fallbackScriptPath = join(process.cwd(), "e2b-template", "read_blend_header.py");
+    try {
+      const fallbackContent = await readFile(fallbackScriptPath, "utf-8");
+      await sandbox.files.write("/tmp/read_blend_header.py", fallbackContent);
+    } catch {
+      // Fallback script is optional, continue without it
+    }
+
     // Run Blender to extract frame count using E2B SDK v2 commands API
     // Use factory-startup to avoid loading user preferences (faster, more stable)
+    // Add --disable-autoexec to skip auto-execution scripts that might cause issues
     // Suppress Blender's stdout warnings by redirecting to /dev/null
     // The Python script outputs JSON to stderr, which will be captured separately
-    // Add --no-window-focus and --disable-crash-handler for better stability with complex files
-    const command = `blender --background --factory-startup --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null 2>&1`;
+    const command = `timeout 25 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null 2>&1 || true`;
     let result;
     try {
       result = await sandbox.commands.run(command, {
@@ -79,13 +88,64 @@ export async function POST(request: NextRequest) {
 
     // Check for segmentation fault or crash (exit code 139 = SIGSEGV)
     if (result.exitCode === 139) {
+      // Try fallback: read file header directly without opening in Blender
+      try {
+        const fallbackCommand = `python3 /tmp/read_blend_header.py ${sandboxFilePath} 2>&1`;
+        const fallbackResult = await sandbox.commands.run(fallbackCommand, {
+          timeoutMs: 5000,
+        });
+        
+        // Try to parse fallback result
+        const fallbackOutput = fallbackResult.stderr || fallbackResult.stdout || "";
+        const fallbackJsonMatch = fallbackOutput.match(/\{[\s\S]*?\}/);
+        if (fallbackJsonMatch) {
+          try {
+            const fallbackData = JSON.parse(fallbackJsonMatch[0]);
+            if (fallbackData.frame_start !== undefined) {
+              // Use fallback data
+              return NextResponse.json({
+                success: true,
+                frameData: {
+                  frameStart: fallbackData.frame_start,
+                  frameEnd: fallbackData.frame_end,
+                  frameCount: fallbackData.frame_count,
+                  fps: fallbackData.fps,
+                },
+                sandboxId: sandbox.sandboxId,
+                warning: fallbackData.note || "Used fallback method - values may be estimated",
+              });
+            }
+          } catch {
+            // Fallback parsing failed, continue with error
+          }
+        }
+      } catch {
+        // Fallback failed, continue with original error
+      }
+
       const errorOutput = result.stderr || result.stdout || "";
+      // Try to extract any JSON error that might have been output before the crash
+      const jsonMatch = errorOutput.match(/\{[^{}]*"error"[^{}]*\}/);
+      if (jsonMatch) {
+        try {
+          const errorData = JSON.parse(jsonMatch[0]);
+          throw new Error(
+            `Blender crashed: ${errorData.error || 'Segmentation fault'}\n` +
+            `This usually means the file contains features incompatible with headless processing.\n` +
+            `Try opening the file in Blender GUI and saving it in a simpler format.`
+          );
+        } catch {
+          // If JSON parsing fails, use default error
+        }
+      }
       throw new Error(
-        `Blender crashed with segmentation fault. This usually means:\n` +
-        `- The Blender file may be corrupted or incompatible with the Blender version\n` +
-        `- The file contains features that require additional dependencies\n` +
-        `- The file is too complex for headless processing\n\n` +
-        `Error details: ${errorOutput.substring(0, 500)}`
+        `Blender crashed with segmentation fault while processing the file.\n` +
+        `Possible causes:\n` +
+        `- Complex physics simulations (rigid body, cloth, etc.)\n` +
+        `- Custom addons or scripts required by the file\n` +
+        `- File format incompatibility\n` +
+        `- Corrupted file data\n\n` +
+        `Suggestion: Open the file in Blender GUI, simplify or remove problematic features, and re-export.`
       );
     }
 
