@@ -55,23 +55,55 @@ export async function POST(request: NextRequest) {
     
     try {
       // Extract JSON from output (should be clean since we suppressed stdout)
-      // Try to find a valid JSON object - look for the last complete JSON object
-      // This handles cases where Blender outputs warnings before our JSON
-      const jsonMatches = outputText.match(/\{[^{}]*"frame_start"[^{}]*\}/g);
-      let jsonString: string | null = null;
+      // Try to find and parse JSON objects from the output
+      const lines = outputText.split('\n');
+      let parsedData: any = null;
       
-      if (jsonMatches && jsonMatches.length > 0) {
-        // Use the last match (most likely to be our output)
-        jsonString = jsonMatches[jsonMatches.length - 1];
-      } else {
-        // Fallback: try to find any JSON object
-        const fallbackMatch = outputText.match(/\{[\s\S]*?\}/);
-        if (fallbackMatch) {
-          jsonString = fallbackMatch[0];
+      // First, try to find a line that looks like our JSON output
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('{') && (trimmed.includes('"frame_start"') || trimmed.includes('"error"'))) {
+          try {
+            const candidate = JSON.parse(trimmed);
+            // Verify it has the expected structure
+            if (candidate.frame_start !== undefined || candidate.error !== undefined) {
+              parsedData = candidate;
+              break;
+            }
+          } catch {
+            // Not valid JSON, continue
+          }
         }
       }
       
-      if (!jsonString) {
+      // If not found line-by-line, try to extract JSON from the entire output
+      if (!parsedData) {
+        // Try to find JSON objects by looking for balanced braces
+        let braceCount = 0;
+        let startIdx = -1;
+        for (let i = 0; i < outputText.length; i++) {
+          if (outputText[i] === '{') {
+            if (braceCount === 0) startIdx = i;
+            braceCount++;
+          } else if (outputText[i] === '}') {
+            braceCount--;
+            if (braceCount === 0 && startIdx !== -1) {
+              const candidate = outputText.substring(startIdx, i + 1);
+              try {
+                const parsed = JSON.parse(candidate);
+                if (parsed.frame_start !== undefined || parsed.error !== undefined) {
+                  parsedData = parsed;
+                  break;
+                }
+              } catch {
+                // Not valid JSON, continue searching
+              }
+            }
+          }
+        }
+      }
+      
+      if (!parsedData) {
         // If no JSON found, check if there's an error in the output
         if (result.exitCode !== 0) {
           throw new Error(`Blender execution failed with exit code ${result.exitCode}: ${outputText}`);
@@ -79,7 +111,7 @@ export async function POST(request: NextRequest) {
         throw new Error(`No JSON found in Blender output. stderr: ${result.stderr?.substring(0, 500) || 'empty'}, stdout: ${result.stdout?.substring(0, 500) || 'empty'}`);
       }
       
-      frameData = JSON.parse(jsonString);
+      frameData = parsedData;
     } catch (parseError) {
       // If parsing fails, provide more context
       const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
