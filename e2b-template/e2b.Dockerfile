@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies and Blender
 # Using apt version for stability, but with additional libraries for complex files
-# Also install coreutils for timeout command
+# Also install coreutils for timeout command and FFmpeg for MP4 encoding
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -22,14 +22,16 @@ RUN apt-get update && apt-get install -y \
     libopenal1 \
     libsndfile1 \
     blender \
+    ffmpeg \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Verify Blender installation
 RUN blender --version || echo "Blender installed"
 
-# Copy the frame extraction script
+# Copy the frame extraction script and render script
 COPY extract_frames.py /tmp/extract_frames.py
+COPY render_mp4.py /tmp/render_mp4.py
 
 # Keep container running
 CMD ["sleep", "infinity"]

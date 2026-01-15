@@ -13,6 +13,8 @@ interface FrameData {
   fps: number
 }
 
+type RenderStatus = 'idle' | 'queued' | 'rendering' | 'completed' | 'error'
+
 const main = () => {
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -20,6 +22,8 @@ const main = () => {
   const [frameData, setFrameData] = useState<FrameData | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [renderStatus, setRenderStatus] = useState<RenderStatus>('idle')
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -47,6 +51,8 @@ const main = () => {
     setFile(selectedFile)
     setFrameData(null)
     setSandboxId(null)
+    setRenderStatus('idle')
+    setVideoUrl(null)
   }
 
   const handleUpload = async () => {
@@ -97,10 +103,15 @@ const main = () => {
       const data = await response.json()
       setFrameData(data.frameData)
       setSandboxId(data.sandboxId)
+      // Auto-triggered render starts automatically, set status to queued
+      setRenderStatus('queued')
+      setVideoUrl(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to upload file')
       setFrameData(null)
       setSandboxId(null)
+      setRenderStatus('idle')
+      setVideoUrl(null)
     } finally {
       if (progressInterval) {
         clearInterval(progressInterval)
@@ -109,6 +120,36 @@ const main = () => {
       setTimeout(() => setUploadProgress(0), 1000)
     }
   }
+
+  // Poll render status when sandboxId is available and render is in progress
+  useEffect(() => {
+    if (!sandboxId || renderStatus === 'completed' || renderStatus === 'error' || renderStatus === 'idle') {
+      return
+    }
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/render-status?sandboxId=${sandboxId}`)
+        if (response.ok) {
+          const data = await response.json()
+          if (data.status === 'completed') {
+            setRenderStatus('completed')
+            setVideoUrl(data.videoUrl)
+            clearInterval(pollInterval)
+          } else if (data.status === 'rendering') {
+            setRenderStatus('rendering')
+          }
+        }
+      } catch (err) {
+        console.error('Error polling render status:', err)
+        // Don't set error state, just log it and continue polling
+      }
+    }, 3000) // Poll every 3 seconds
+
+    return () => {
+      clearInterval(pollInterval)
+    }
+  }, [sandboxId, renderStatus])
 
   // Cleanup progress interval on unmount
   useEffect(() => {
@@ -123,6 +164,10 @@ const main = () => {
       return
     }
 
+    setRenderStatus('queued')
+    setVideoUrl(null)
+    setError(null)
+
     try {
       const response = await fetch('/api/trigger-render', {
         method: 'POST',
@@ -134,13 +179,14 @@ const main = () => {
 
       if (response.ok) {
         console.log('Inngest function triggered successfully')
-        // Optionally show success message
+        setRenderStatus('rendering')
       } else {
         const errorData = await response.json()
         throw new Error(errorData.error || 'Failed to trigger render')
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger Inngest function')
+      setRenderStatus('error')
     }
   }
 
@@ -212,6 +258,52 @@ const main = () => {
             </Card>
           )}
 
+          {renderStatus !== 'idle' && (
+            <Card className="bg-muted/50">
+              <CardHeader>
+                <CardTitle className="text-lg">Render Status</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Status:</span>
+                    <span className={`text-sm font-semibold ${
+                      renderStatus === 'completed' ? 'text-green-600' :
+                      renderStatus === 'error' ? 'text-red-600' :
+                      renderStatus === 'rendering' ? 'text-blue-600' :
+                      'text-yellow-600'
+                    }`}>
+                      {renderStatus === 'queued' && 'Queued'}
+                      {renderStatus === 'rendering' && 'Rendering...'}
+                      {renderStatus === 'completed' && 'Completed'}
+                      {renderStatus === 'error' && 'Error'}
+                    </span>
+                  </div>
+                  {(renderStatus === 'rendering' || renderStatus === 'queued') && (
+                    <Progress value={renderStatus === 'rendering' ? 50 : 10} />
+                  )}
+                </div>
+                {renderStatus === 'completed' && videoUrl && (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">Your video is ready!</p>
+                    <div className="flex gap-2">
+                      <Button asChild>
+                        <a href={videoUrl} download target="_blank" rel="noopener noreferrer">
+                          Download MP4
+                        </a>
+                      </Button>
+                      <Button variant="outline" asChild>
+                        <a href={videoUrl} target="_blank" rel="noopener noreferrer">
+                          Preview
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           <div className="flex gap-2">
             <Button
               onClick={handleUpload}
@@ -222,11 +314,11 @@ const main = () => {
             </Button>
             <Button
               onClick={handleTriggerRender}
-              disabled={!sandboxId || uploading}
+              disabled={!sandboxId || uploading || renderStatus === 'rendering'}
               variant="default"
               className="flex-1"
             >
-              Start Render
+              {renderStatus === 'rendering' ? 'Rendering...' : 'Re-render'}
             </Button>
           </div>
         </CardContent>

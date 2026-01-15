@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Sandbox } from "e2b";
 import { readFile } from "fs/promises";
 import { join } from "path";
+import { inngest } from "@/inngest/client";
 
 export async function POST(request: NextRequest) {
   let sandbox: Sandbox | null = null;
@@ -103,14 +104,30 @@ export async function POST(request: NextRequest) {
             const fallbackData = JSON.parse(fallbackJsonMatch[0]);
             if (fallbackData.frame_start !== undefined) {
               // Use fallback data
+              const responseFrameData = {
+                frameStart: fallbackData.frame_start,
+                frameEnd: fallbackData.frame_end,
+                frameCount: fallbackData.frame_count,
+                fps: fallbackData.fps,
+              };
+
+              // Auto-trigger Inngest render function after successful frame detection
+              try {
+                await inngest.send({
+                  name: "render/invoked",
+                  data: {
+                    sandboxId: sandbox.sandboxId,
+                    frameData: responseFrameData,
+                  },
+                });
+                console.log("Auto-triggered render function for sandbox:", sandbox.sandboxId);
+              } catch (inngestError) {
+                console.error("Failed to trigger Inngest render function:", inngestError);
+              }
+
               return NextResponse.json({
                 success: true,
-                frameData: {
-                  frameStart: fallbackData.frame_start,
-                  frameEnd: fallbackData.frame_end,
-                  frameCount: fallbackData.frame_count,
-                  fps: fallbackData.fps,
-                },
+                frameData: responseFrameData,
                 sandboxId: sandbox.sandboxId,
                 warning: fallbackData.note || "Used fallback method - values may be estimated",
               });
@@ -249,15 +266,35 @@ export async function POST(request: NextRequest) {
       throw new Error(`Invalid frame data received: ${JSON.stringify(frameData)}`);
     }
 
+    // Prepare frame data for response and Inngest
+    const responseFrameData = {
+      frameStart: frameData.frame_start,
+      frameEnd: frameData.frame_end,
+      frameCount: frameData.frame_count,
+      fps: frameData.fps,
+    };
+
+    // Auto-trigger Inngest render function after successful frame detection
+    try {
+      await inngest.send({
+        name: "render/invoked",
+        data: {
+          sandboxId: sandbox.sandboxId,
+          frameData: responseFrameData,
+        },
+      });
+      console.log("Auto-triggered render function for sandbox:", sandbox.sandboxId);
+    } catch (inngestError) {
+      // Log error but don't fail the upload - frame detection was successful
+      console.error("Failed to trigger Inngest render function:", inngestError);
+      // Continue to return success response with frame data
+    }
+
     // Return frame data and sandbox ID
+    // Note: Don't kill the sandbox - Inngest will use it for rendering
     return NextResponse.json({
       success: true,
-      frameData: {
-        frameStart: frameData.frame_start,
-        frameEnd: frameData.frame_end,
-        frameCount: frameData.frame_count,
-        fps: frameData.fps,
-      },
+      frameData: responseFrameData,
       sandboxId: sandbox.sandboxId,
     });
   } catch (error) {
