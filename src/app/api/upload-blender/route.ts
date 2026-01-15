@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Sandbox } from "e2b";
+import { readFile } from "fs/promises";
+import { join } from "path";
 
 export async function POST(request: NextRequest) {
   let sandbox: Sandbox | null = null;
@@ -37,8 +39,17 @@ export async function POST(request: NextRequest) {
     const sandboxFilePath = "/tmp/uploaded.blend";
     await sandbox.files.write(sandboxFilePath, bytes);
 
-    // The extract_frames.py script is already included in the template at /tmp/extract_frames.py
+    // Upload the extract_frames.py script to sandbox
+    // Read the script from the e2b-template directory
+    const scriptPath = join(process.cwd(), "e2b-template", "extract_frames.py");
+    let scriptContent: string;
+    try {
+      scriptContent = await readFile(scriptPath, "utf-8");
+    } catch (readError) {
+      throw new Error(`Failed to read extract_frames.py script from ${scriptPath}: ${readError instanceof Error ? readError.message : String(readError)}`);
+    }
     const scriptSandboxPath = "/tmp/extract_frames.py";
+    await sandbox.files.write(scriptSandboxPath, scriptContent);
 
     // Run Blender to extract frame count using E2B SDK v2 commands API
     // Suppress Blender's stdout warnings by redirecting to /dev/null
