@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readFile } from "fs/promises";
+import { stat } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 
@@ -20,13 +20,13 @@ export async function GET(request: NextRequest) {
     const videoExists = existsSync(videoPath);
 
     if (videoExists) {
-      // Get file stats for additional info
+      // Get file stats for additional info (using stat instead of readFile for performance)
       try {
-        const stats = await readFile(videoPath);
+        const fileStats = await stat(videoPath);
         return NextResponse.json({
           status: "completed",
           videoUrl: `/renders/${sandboxId}.mp4`,
-          fileSize: stats.byteLength,
+          fileSize: fileStats.size,
         });
       } catch {
         return NextResponse.json({
