@@ -78,16 +78,16 @@ export const renderFunction = inngest.createFunction(
         const outputPath = "/tmp/output.mp4";
 
         // Use factory-startup and disable-autoexec for stability
-        // Set a longer timeout for rendering (up to 1 hour)
+        // Set a longer timeout for rendering (up to 10 hours = 36000 seconds)
         // Capture exit code before || true masks it, and preserve stderr for JSON output
         // Python script outputs JSON to stderr, so we preserve stderr
-        const command = `(timeout 3600 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${blendFilePath}; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
+        const command = `(timeout 36000 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${blendFilePath}; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
         
         console.log("Starting Blender render...");
         let result;
         try {
           // Use timeoutMs: 0 so E2B doesn't add its own deadline;
-          // the shell-level `timeout 3600` around Blender enforces the hard cap.
+          // the shell-level `timeout 36000` (10 hours) around Blender enforces the hard cap.
           result = await sandbox.commands.run(command, {
             timeoutMs: 0,
           });
@@ -117,6 +117,11 @@ export const renderFunction = inngest.createFunction(
                             allOutput.includes("segfault") || 
                             allOutput.includes("SIGSEGV") ||
                             allOutput.match(/\d+\s+Segmentation fault/);
+        
+        // Check for timeout termination (exit code 124 or "terminated" message)
+        const hasTimeoutTermination = actualExitCode === 124 || 
+                                      allOutput.includes("terminated") ||
+                                      allOutput.match(/\d+:\s*\[unknown\]\s*terminated/i);
 
         // Parse render result from stderr (where our JSON is)
         // Remove EXIT_CODE marker lines before parsing
@@ -152,6 +157,17 @@ export const renderFunction = inngest.createFunction(
           console.error("Failed to parse render output:", parseError);
         }
 
+        // Check for timeout termination first
+        if (hasTimeoutTermination) {
+          throw new Error(
+            `Blender render timed out after 10 hours.\n` +
+            `The render is taking longer than expected. Possible solutions:\n` +
+            `- Reduce the number of frames or complexity\n` +
+            `- Lower the resolution or quality settings\n` +
+            `- Split the animation into smaller segments`
+          );
+        }
+        
         // Check for segfault before checking render data
         if (hasSegfault || actualExitCode === 139) {
           const errorMsg = renderData?.error || "Segmentation fault";

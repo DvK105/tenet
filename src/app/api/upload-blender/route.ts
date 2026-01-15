@@ -103,7 +103,22 @@ export async function POST(request: NextRequest) {
                         allOutput.includes("segfault") || 
                         allOutput.includes("SIGSEGV") ||
                         allOutput.match(/\d+\s+Segmentation fault/);
+    
+    // Check for timeout termination (exit code 124 or "terminated" message)
+    const hasTimeoutTermination = actualExitCode === 124 || 
+                                  allOutput.includes("terminated") ||
+                                  allOutput.match(/\d+:\s*\[unknown\]\s*terminated/i);
 
+    // Check for timeout termination first
+    if (hasTimeoutTermination) {
+      throw new Error(
+        `Blender frame extraction timed out after 25 seconds.\n` +
+        `The file may be too complex or corrupted. Try:\n` +
+        `- Opening the file in Blender GUI and saving it in a simpler format\n` +
+        `- Reducing file complexity or removing problematic features`
+      );
+    }
+    
     // Check for segmentation fault or crash (exit code 139 = SIGSEGV, or detected in output)
     if (actualExitCode === 139 || hasSegfault) {
       // Try fallback: read file header directly without opening in Blender
@@ -254,8 +269,21 @@ export async function POST(request: NextRequest) {
       }
       
       if (!parsedData) {
-        // Check if there was a segfault even if exit code is 0 (due to || true)
+        // Check if there was a timeout termination or segfault even if exit code is 0 (due to || true)
         const allOutputForCheck = (result.stderr || "") + (result.stdout || "");
+        const hasTimeoutInOutput = actualExitCode === 124 || 
+                                   allOutputForCheck.includes("terminated") ||
+                                   allOutputForCheck.match(/\d+:\s*\[unknown\]\s*terminated/i);
+        
+        if (hasTimeoutInOutput) {
+          throw new Error(
+            `Blender frame extraction timed out after 25 seconds.\n` +
+            `The file may be too complex or corrupted. Try:\n` +
+            `- Opening the file in Blender GUI and saving it in a simpler format\n` +
+            `- Reducing file complexity or removing problematic features`
+          );
+        }
+        
         if (allOutputForCheck.includes("Segmentation fault") || 
             allOutputForCheck.includes("segfault") || 
             allOutputForCheck.match(/\d+\s+Segmentation fault/)) {
