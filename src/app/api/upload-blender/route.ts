@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     // Run Blender to extract frame count using E2B SDK v2 commands API
     // Suppress Blender's stdout warnings by redirecting to /dev/null
     // The Python script outputs JSON to stderr, which will be captured separately
-    const command = `blender --background --no-window-focus --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null`;
+    const command = `blender --background --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null`;
     let result;
     try {
       result = await sandbox.commands.run(command, {
