@@ -70,8 +70,10 @@ export async function POST(request: NextRequest) {
     const command = `(timeout 25 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
     let result;
     try {
+      // Use timeoutMs: 0 so E2B doesn't kill the command early.
+      // The shell-level `timeout 25` around Blender will still enforce a hard cap.
       result = await sandbox.commands.run(command, {
-        timeoutMs: 30000, // Reduced to 30 seconds - complex files should load faster with optimized flags
+        timeoutMs: 0,
       });
     } catch (error: any) {
       // E2B SDK throws CommandExitError when exit code is non-zero

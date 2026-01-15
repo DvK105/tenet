@@ -86,8 +86,10 @@ export const renderFunction = inngest.createFunction(
         console.log("Starting Blender render...");
         let result;
         try {
+          // Use timeoutMs: 0 so E2B doesn't add its own deadline;
+          // the shell-level `timeout 3600` around Blender enforces the hard cap.
           result = await sandbox.commands.run(command, {
-            timeoutMs: 3600000, // 1 hour timeout for rendering
+            timeoutMs: 0,
           });
         } catch (error: any) {
           // E2B SDK throws CommandExitError when exit code is non-zero
