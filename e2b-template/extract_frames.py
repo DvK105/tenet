@@ -2,6 +2,26 @@ import bpy
 import json
 import sys
 import os
+import signal
+
+# Set up signal handlers to output JSON on crash
+def signal_handler(signum, frame):
+    """Output error JSON when receiving a signal (like SIGSEGV)"""
+    error_result = {
+        "error": f"Process terminated by signal {signum}",
+        "error_type": "SignalError"
+    }
+    try:
+        print(json.dumps(error_result), file=sys.stderr)
+        sys.stderr.flush()
+    except:
+        pass
+    sys.exit(128 + signum)
+
+# Register signal handlers for common crash signals
+signal.signal(signal.SIGSEGV, signal_handler)
+signal.signal(signal.SIGABRT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # Get blend file path from command line args
 # Blender passes its own args, so the blend file is typically the last arg
@@ -89,10 +109,30 @@ try:
     print(json.dumps(result), file=sys.stderr)
     sys.exit(0)
     
+except KeyboardInterrupt:
+    error_result = {
+        "error": "Process interrupted",
+        "error_type": "KeyboardInterrupt"
+    }
+    print(json.dumps(error_result), file=sys.stderr)
+    sys.stderr.flush()
+    sys.exit(130)
+except SystemExit:
+    # Re-raise to preserve exit code
+    raise
 except Exception as e:
     error_result = {
         "error": str(e),
         "error_type": type(e).__name__
     }
-    print(json.dumps(error_result), file=sys.stderr)
+    try:
+        print(json.dumps(error_result), file=sys.stderr)
+        sys.stderr.flush()
+    except:
+        # If even stderr fails, try stdout as last resort
+        try:
+            print(json.dumps(error_result), file=sys.stdout)
+            sys.stdout.flush()
+        except:
+            pass
     sys.exit(1)

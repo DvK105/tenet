@@ -64,9 +64,10 @@ export async function POST(request: NextRequest) {
     // Run Blender to extract frame count using E2B SDK v2 commands API
     // Use factory-startup to avoid loading user preferences (faster, more stable)
     // Add --disable-autoexec to skip auto-execution scripts that might cause issues
-    // Suppress Blender's stdout warnings by redirecting to /dev/null
-    // The Python script outputs JSON to stderr, which will be captured separately
-    const command = `timeout 25 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null 2>&1 || true`;
+    // Suppress Blender's stdout warnings by redirecting ONLY stdout to /dev/null
+    // Keep stderr available for JSON output and error detection (Python script outputs JSON to stderr)
+    // Capture actual exit code before || true masks it
+    const command = `(timeout 25 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
     let result;
     try {
       result = await sandbox.commands.run(command, {
@@ -87,8 +88,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Check for segmentation fault or crash (exit code 139 = SIGSEGV)
-    if (result.exitCode === 139) {
+    // Extract actual exit code from output if present
+    let actualExitCode = result.exitCode;
+    const exitCodeMatch = (result.stderr || result.stdout || "").match(/EXIT_CODE:(\d+)/);
+    if (exitCodeMatch) {
+      actualExitCode = parseInt(exitCodeMatch[1], 10);
+    }
+
+    // Check for segmentation fault in bash error messages (even if exit code is 0)
+    const allOutput = (result.stderr || "") + (result.stdout || "");
+    const hasSegfault = allOutput.includes("Segmentation fault") || 
+                        allOutput.includes("segfault") || 
+                        allOutput.includes("SIGSEGV") ||
+                        allOutput.match(/\d+\s+Segmentation fault/);
+
+    // Check for segmentation fault or crash (exit code 139 = SIGSEGV, or detected in output)
+    if (actualExitCode === 139 || hasSegfault) {
       // Try fallback: read file header directly without opening in Blender
       try {
         const fallbackCommand = `python3 /tmp/read_blend_header.py ${sandboxFilePath} 2>&1`;
@@ -142,7 +157,9 @@ export async function POST(request: NextRequest) {
 
       const errorOutput = result.stderr || result.stdout || "";
       // Try to extract any JSON error that might have been output before the crash
-      const jsonMatch = errorOutput.match(/\{[^{}]*"error"[^{}]*\}/);
+      // Remove EXIT_CODE line from output before parsing
+      const cleanOutput = errorOutput.replace(/EXIT_CODE:\d+/g, "").trim();
+      const jsonMatch = cleanOutput.match(/\{[^{}]*"error"[^{}]*\}/);
       if (jsonMatch) {
         try {
           const errorData = JSON.parse(jsonMatch[0]);
@@ -167,7 +184,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for other non-zero exit codes
-    if (result.exitCode !== 0 && result.exitCode !== undefined) {
+    if (actualExitCode !== 0 && actualExitCode !== undefined) {
       const errorOutput = result.stderr || result.stdout || "";
       // Check if it's a known error pattern
       if (errorOutput.includes("Segmentation fault") || errorOutput.includes("core dumped")) {
@@ -180,7 +197,8 @@ export async function POST(request: NextRequest) {
 
     // The Python script outputs JSON to stderr to avoid Blender's stdout warnings
     // Check stderr first (where our JSON is), then stdout as fallback
-    const outputText = result.stderr || result.stdout || "";
+    // Remove EXIT_CODE marker lines before parsing
+    let outputText = (result.stderr || result.stdout || "").replace(/EXIT_CODE:\d+/g, "").trim();
     let frameData;
     
     try {
@@ -234,17 +252,81 @@ export async function POST(request: NextRequest) {
       }
       
       if (!parsedData) {
+        // Check if there was a segfault even if exit code is 0 (due to || true)
+        const allOutputForCheck = (result.stderr || "") + (result.stdout || "");
+        if (allOutputForCheck.includes("Segmentation fault") || 
+            allOutputForCheck.includes("segfault") || 
+            allOutputForCheck.match(/\d+\s+Segmentation fault/)) {
+          // Try fallback before throwing segfault error
+          try {
+            const fallbackCommand = `python3 /tmp/read_blend_header.py ${sandboxFilePath} 2>&1`;
+            const fallbackResult = await sandbox.commands.run(fallbackCommand, {
+              timeoutMs: 5000,
+            });
+            
+            const fallbackOutput = fallbackResult.stderr || fallbackResult.stdout || "";
+            const fallbackJsonMatch = fallbackOutput.match(/\{[\s\S]*?\}/);
+            if (fallbackJsonMatch) {
+              try {
+                const fallbackData = JSON.parse(fallbackJsonMatch[0]);
+                if (fallbackData.frame_start !== undefined) {
+                  const responseFrameData = {
+                    frameStart: fallbackData.frame_start,
+                    frameEnd: fallbackData.frame_end,
+                    frameCount: fallbackData.frame_count,
+                    fps: fallbackData.fps,
+                  };
+
+                  try {
+                    await inngest.send({
+                      name: "render/invoked",
+                      data: {
+                        sandboxId: sandbox.sandboxId,
+                        frameData: responseFrameData,
+                      },
+                    });
+                    console.log("Auto-triggered render function for sandbox:", sandbox.sandboxId);
+                  } catch (inngestError) {
+                    console.error("Failed to trigger Inngest render function:", inngestError);
+                  }
+
+                  return NextResponse.json({
+                    success: true,
+                    frameData: responseFrameData,
+                    sandboxId: sandbox.sandboxId,
+                    warning: fallbackData.note || "Used fallback method - Blender crashed on file open",
+                  });
+                }
+              } catch {
+                // Fallback parsing failed, continue with error
+              }
+            }
+          } catch {
+            // Fallback failed, continue with error
+          }
+          
+          throw new Error(
+            `Blender crashed with segmentation fault while processing the file.\n` +
+            `Possible causes:\n` +
+            `- Complex physics simulations (rigid body, cloth, etc.)\n` +
+            `- Custom addons or scripts required by the file\n` +
+            `- File format incompatibility\n` +
+            `- Corrupted file data\n\n` +
+            `Suggestion: Open the file in Blender GUI, simplify or remove problematic features, and re-export.`
+          );
+        }
+        
         // If no JSON found and exit code was non-zero, provide detailed error
-        if (result.exitCode !== 0) {
+        if (actualExitCode !== 0 && actualExitCode !== undefined) {
           const errorOutput = result.stderr || result.stdout || "";
           throw new Error(
-            `Blender failed to process the file (exit code: ${result.exitCode}). ` +
+            `Blender failed to process the file (exit code: ${actualExitCode}). ` +
             `The file may be incompatible, corrupted, or require features not available in headless mode.\n` +
             `Error output: ${errorOutput.substring(0, 1000)}`
           );
         }
         // If exit code was 0 but no JSON, something else went wrong
-        const debugInfo = `stderr: ${result.stderr?.substring(0, 1000) || 'empty'}, stdout: ${result.stdout?.substring(0, 1000) || 'empty'}, exitCode: ${result.exitCode}`;
+        const debugInfo = `stderr: ${result.stderr?.substring(0, 1000) || 'empty'}, stdout: ${result.stdout?.substring(0, 1000) || 'empty'}, exitCode: ${result.exitCode}, actualExitCode: ${actualExitCode}`;
         throw new Error(`No JSON found in Blender output. ${debugInfo}`);
       }
       

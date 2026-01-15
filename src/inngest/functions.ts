@@ -79,7 +79,9 @@ export const renderFunction = inngest.createFunction(
 
         // Use factory-startup and disable-autoexec for stability
         // Set a longer timeout for rendering (up to 1 hour)
-        const command = `timeout 3600 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${blendFilePath} 2>&1 || true`;
+        // Capture exit code before || true masks it, and preserve stderr for JSON output
+        // Python script outputs JSON to stderr, so we preserve stderr
+        const command = `(timeout 3600 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${blendFilePath}; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
         
         console.log("Starting Blender render...");
         let result;
@@ -100,8 +102,23 @@ export const renderFunction = inngest.createFunction(
           }
         }
 
+        // Extract actual exit code from output if present
+        let actualExitCode = result.exitCode;
+        const exitCodeMatch = (result.stderr || result.stdout || "").match(/EXIT_CODE:(\d+)/);
+        if (exitCodeMatch) {
+          actualExitCode = parseInt(exitCodeMatch[1], 10);
+        }
+
+        // Check for segmentation fault in output
+        const allOutput = (result.stderr || "") + (result.stdout || "");
+        const hasSegfault = allOutput.includes("Segmentation fault") || 
+                            allOutput.includes("segfault") || 
+                            allOutput.includes("SIGSEGV") ||
+                            allOutput.match(/\d+\s+Segmentation fault/);
+
         // Parse render result from stderr (where our JSON is)
-        const outputText = result.stderr || result.stdout || "";
+        // Remove EXIT_CODE marker lines before parsing
+        let outputText = (result.stderr || result.stdout || "").replace(/EXIT_CODE:\d+/g, "").trim();
         let renderData: any = null;
         
         try {
@@ -133,12 +150,22 @@ export const renderFunction = inngest.createFunction(
           console.error("Failed to parse render output:", parseError);
         }
 
+        // Check for segfault before checking render data
+        if (hasSegfault || actualExitCode === 139) {
+          const errorMsg = renderData?.error || "Segmentation fault";
+          throw new Error(
+            `Blender crashed during render: ${errorMsg}\n` +
+            `The file may contain features incompatible with headless rendering.\n` +
+            `Try simplifying the file or removing complex features.`
+          );
+        }
+
         if (renderData && renderData.error) {
           throw new Error(`Blender render error: ${renderData.error} (error_type: ${renderData.error_type || 'unknown'})`);
         }
 
-        if (result.exitCode !== 0 && result.exitCode !== undefined && result.exitCode !== 1) {
-          throw new Error(`Blender render failed with exit code ${result.exitCode}. Output: ${outputText.substring(0, 1000)}`);
+        if (actualExitCode !== 0 && actualExitCode !== undefined && actualExitCode !== 1) {
+          throw new Error(`Blender render failed with exit code ${actualExitCode}. Output: ${outputText.substring(0, 1000)}`);
         }
 
         // Verify output file exists
