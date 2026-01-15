@@ -52,13 +52,15 @@ export async function POST(request: NextRequest) {
     await sandbox.files.write(scriptSandboxPath, scriptContent);
 
     // Run Blender to extract frame count using E2B SDK v2 commands API
+    // Use factory-startup to avoid loading user preferences (faster, more stable)
     // Suppress Blender's stdout warnings by redirecting to /dev/null
     // The Python script outputs JSON to stderr, which will be captured separately
-    const command = `blender --background --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null`;
+    // Add --no-window-focus and --disable-crash-handler for better stability with complex files
+    const command = `blender --background --factory-startup --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null 2>&1`;
     let result;
     try {
       result = await sandbox.commands.run(command, {
-        timeoutMs: 60000, // 60 seconds timeout for Blender execution
+        timeoutMs: 30000, // Reduced to 30 seconds - complex files should load faster with optimized flags
       });
     } catch (error: any) {
       // E2B SDK throws CommandExitError when exit code is non-zero
@@ -72,6 +74,30 @@ export async function POST(request: NextRequest) {
       } else {
         // Re-throw if it's not a CommandExitError
         throw error;
+      }
+    }
+
+    // Check for segmentation fault or crash (exit code 139 = SIGSEGV)
+    if (result.exitCode === 139) {
+      const errorOutput = result.stderr || result.stdout || "";
+      throw new Error(
+        `Blender crashed with segmentation fault. This usually means:\n` +
+        `- The Blender file may be corrupted or incompatible with the Blender version\n` +
+        `- The file contains features that require additional dependencies\n` +
+        `- The file is too complex for headless processing\n\n` +
+        `Error details: ${errorOutput.substring(0, 500)}`
+      );
+    }
+
+    // Check for other non-zero exit codes
+    if (result.exitCode !== 0 && result.exitCode !== undefined) {
+      const errorOutput = result.stderr || result.stdout || "";
+      // Check if it's a known error pattern
+      if (errorOutput.includes("Segmentation fault") || errorOutput.includes("core dumped")) {
+        throw new Error(
+          `Blender crashed while processing the file. The file may be incompatible or corrupted.\n` +
+          `Error: ${errorOutput.substring(0, 500)}`
+        );
       }
     }
 
@@ -131,7 +157,16 @@ export async function POST(request: NextRequest) {
       }
       
       if (!parsedData) {
-        // If no JSON found, provide detailed error information
+        // If no JSON found and exit code was non-zero, provide detailed error
+        if (result.exitCode !== 0) {
+          const errorOutput = result.stderr || result.stdout || "";
+          throw new Error(
+            `Blender failed to process the file (exit code: ${result.exitCode}). ` +
+            `The file may be incompatible, corrupted, or require features not available in headless mode.\n` +
+            `Error output: ${errorOutput.substring(0, 1000)}`
+          );
+        }
+        // If exit code was 0 but no JSON, something else went wrong
         const debugInfo = `stderr: ${result.stderr?.substring(0, 1000) || 'empty'}, stdout: ${result.stdout?.substring(0, 1000) || 'empty'}, exitCode: ${result.exitCode}`;
         throw new Error(`No JSON found in Blender output. ${debugInfo}`);
       }

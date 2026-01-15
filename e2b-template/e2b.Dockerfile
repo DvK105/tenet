@@ -4,6 +4,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies and Blender
+# Using apt version for stability, but with additional libraries for complex files
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -16,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     libxcursor1 \
     libxinerama1 \
     libxfixes3 \
+    libopenal1 \
+    libsndfile1 \
     blender \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

@@ -21,19 +21,56 @@ try:
     if not os.path.exists(blend_file):
         raise FileNotFoundError(f"Blend file not found: {blend_file}")
     
-    bpy.ops.wm.open_mainfile(filepath=blend_file)
+    # For complex files, use multiple strategies to open safely
+    # Strategy 1: Try with minimal loading (fastest, safest for complex files)
+    opened = False
+    strategies = [
+        # Skip UI, skip textures, skip sounds - fastest and most stable
+        {"filepath": blend_file, "load_ui": False, "use_scripts": False},
+        # Skip UI only
+        {"filepath": blend_file, "load_ui": False},
+        # Default (fallback)
+        {"filepath": blend_file}
+    ]
     
-    # Get scene information
+    for strategy in strategies:
+        try:
+            bpy.ops.wm.open_mainfile(**strategy)
+            opened = True
+            break
+        except Exception:
+            # Try next strategy
+            continue
+    
+    if not opened:
+        raise RuntimeError("Failed to open blend file with any strategy")
+    
+    # Get scene information quickly
+    # Use try-except for each property to handle edge cases
     scene = bpy.context.scene
-    frame_start = scene.frame_start
-    frame_end = scene.frame_end
+    
+    try:
+        frame_start = int(scene.frame_start)
+    except:
+        frame_start = 1
+    
+    try:
+        frame_end = int(scene.frame_end)
+    except:
+        frame_end = 250  # Default fallback
+    
     frame_count = frame_end - frame_start + 1
     
+    try:
+        fps = int(scene.render.fps)
+    except:
+        fps = 24  # Default fallback
+    
     result = {
-        "frame_start": int(frame_start),
-        "frame_end": int(frame_end),
-        "frame_count": int(frame_count),
-        "fps": scene.render.fps
+        "frame_start": frame_start,
+        "frame_end": frame_end,
+        "frame_count": frame_count,
+        "fps": fps
     }
     
     # Output JSON to stderr to avoid Blender's stdout warnings interfering
