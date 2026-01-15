@@ -55,16 +55,31 @@ export async function POST(request: NextRequest) {
     
     try {
       // Extract JSON from output (should be clean since we suppressed stdout)
-      // Look for the JSON object in the output
-      const jsonMatch = outputText.match(/\{[\s\S]*?\}/);
-      if (!jsonMatch) {
+      // Try to find a valid JSON object - look for the last complete JSON object
+      // This handles cases where Blender outputs warnings before our JSON
+      const jsonMatches = outputText.match(/\{[^{}]*"frame_start"[^{}]*\}/g);
+      let jsonString: string | null = null;
+      
+      if (jsonMatches && jsonMatches.length > 0) {
+        // Use the last match (most likely to be our output)
+        jsonString = jsonMatches[jsonMatches.length - 1];
+      } else {
+        // Fallback: try to find any JSON object
+        const fallbackMatch = outputText.match(/\{[\s\S]*?\}/);
+        if (fallbackMatch) {
+          jsonString = fallbackMatch[0];
+        }
+      }
+      
+      if (!jsonString) {
         // If no JSON found, check if there's an error in the output
         if (result.exitCode !== 0) {
           throw new Error(`Blender execution failed with exit code ${result.exitCode}: ${outputText}`);
         }
         throw new Error(`No JSON found in Blender output. stderr: ${result.stderr?.substring(0, 500) || 'empty'}, stdout: ${result.stdout?.substring(0, 500) || 'empty'}`);
       }
-      frameData = JSON.parse(jsonMatch[0]);
+      
+      frameData = JSON.parse(jsonString);
     } catch (parseError) {
       // If parsing fails, provide more context
       const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
