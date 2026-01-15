@@ -44,9 +44,25 @@ export async function POST(request: NextRequest) {
     // Suppress Blender's stdout warnings by redirecting to /dev/null
     // The Python script outputs JSON to stderr, which will be captured separately
     const command = `blender --background --no-window-focus --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null`;
-    const result = await sandbox.commands.run(command, {
-      timeoutMs: 60000, // 60 seconds timeout for Blender execution
-    });
+    let result;
+    try {
+      result = await sandbox.commands.run(command, {
+        timeoutMs: 60000, // 60 seconds timeout for Blender execution
+      });
+    } catch (error: any) {
+      // E2B SDK throws CommandExitError when exit code is non-zero
+      // Extract the result from the error object
+      if (error.exitCode !== undefined && (error.stdout !== undefined || error.stderr !== undefined)) {
+        result = {
+          exitCode: error.exitCode,
+          stdout: error.stdout || "",
+          stderr: error.stderr || "",
+        };
+      } else {
+        // Re-throw if it's not a CommandExitError
+        throw error;
+      }
+    }
 
     // The Python script outputs JSON to stderr to avoid Blender's stdout warnings
     // Check stderr first (where our JSON is), then stdout as fallback
@@ -104,30 +120,27 @@ export async function POST(request: NextRequest) {
       }
       
       if (!parsedData) {
-        // If no JSON found, check if there's an error in the output
-        if (result.exitCode !== 0) {
-          throw new Error(`Blender execution failed with exit code ${result.exitCode}: ${outputText}`);
-        }
-        throw new Error(`No JSON found in Blender output. stderr: ${result.stderr?.substring(0, 500) || 'empty'}, stdout: ${result.stdout?.substring(0, 500) || 'empty'}`);
+        // If no JSON found, provide detailed error information
+        const debugInfo = `stderr: ${result.stderr?.substring(0, 1000) || 'empty'}, stdout: ${result.stdout?.substring(0, 1000) || 'empty'}, exitCode: ${result.exitCode}`;
+        throw new Error(`No JSON found in Blender output. ${debugInfo}`);
       }
       
       frameData = parsedData;
     } catch (parseError) {
       // If parsing fails, provide more context
       const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-      const debugInfo = `stderr: ${result.stderr?.substring(0, 500) || 'empty'}, stdout: ${result.stdout?.substring(0, 500) || 'empty'}`;
+      const debugInfo = `stderr: ${result.stderr?.substring(0, 1000) || 'empty'}, stdout: ${result.stdout?.substring(0, 1000) || 'empty'}, exitCode: ${result.exitCode}`;
       throw new Error(`Failed to parse Blender output: ${errorMsg}. ${debugInfo}`);
     }
 
-    // Check exit code after parsing (script exits with 0 on success, 1 on error)
-    if (result.exitCode !== 0) {
-      const errorOutput = result.stderr || result.stdout || "Unknown error";
-      throw new Error(`Blender execution failed with exit code ${result.exitCode}: ${errorOutput}`);
+    // Check for errors in the parsed data (script outputs error JSON on failure)
+    if (frameData.error) {
+      throw new Error(`Blender script error: ${frameData.error} (error_type: ${frameData.error_type || 'unknown'})`);
     }
 
-    // Check for errors in the parsed data
-    if (frameData.error) {
-      throw new Error(`Blender script error: ${frameData.error}`);
+    // Verify we have the expected frame data
+    if (frameData.frame_start === undefined || frameData.frame_end === undefined) {
+      throw new Error(`Invalid frame data received: ${JSON.stringify(frameData)}`);
     }
 
     // Return frame data and sandbox ID
