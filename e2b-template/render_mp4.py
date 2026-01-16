@@ -3,6 +3,7 @@ import json
 import sys
 import os
 import signal
+import time
 
 # Set up signal handlers to output JSON on crash
 def signal_handler(signum, frame):
@@ -38,6 +39,34 @@ if not blend_file:
     blend_file = "/tmp/uploaded.blend"
 
 output_path = "/tmp/output.mp4"
+progress_path = "/tmp/render_progress.json"
+
+
+def _read_existing_progress():
+    try:
+        if os.path.exists(progress_path):
+            with open(progress_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        return None
+    return None
+
+
+def _write_progress(payload):
+    try:
+        with open(progress_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+            f.flush()
+    except Exception:
+        pass
+
+
+def _ensure_started_at():
+    existing = _read_existing_progress() or {}
+    started_at = existing.get("startedAt")
+    if started_at is None:
+        started_at = time.time()
+    return started_at
 
 try:
     # Open the blend file
@@ -77,6 +106,56 @@ try:
     
     # Get scene information
     scene = bpy.context.scene
+
+    started_at = _ensure_started_at()
+    frame_start = int(scene.frame_start)
+    frame_end = int(scene.frame_end)
+    frame_count = int(frame_end - frame_start + 1)
+
+    def on_render_init(_scene):
+        _write_progress({
+            "status": "rendering",
+            "frameStart": frame_start,
+            "frameEnd": frame_end,
+            "frameCount": frame_count,
+            "currentFrame": int(_scene.frame_current),
+            "framesDone": max(0, int(_scene.frame_current) - frame_start),
+            "startedAt": started_at,
+            "updatedAt": time.time(),
+        })
+
+    def on_render_post(_scene):
+        current_frame = int(_scene.frame_current)
+        frames_done = max(0, current_frame - frame_start + 1)
+        _write_progress({
+            "status": "rendering",
+            "frameStart": frame_start,
+            "frameEnd": frame_end,
+            "frameCount": frame_count,
+            "currentFrame": current_frame,
+            "framesDone": frames_done,
+            "startedAt": started_at,
+            "updatedAt": time.time(),
+        })
+
+    def on_render_cancel(_scene):
+        _write_progress({
+            "status": "cancelled",
+            "frameStart": frame_start,
+            "frameEnd": frame_end,
+            "frameCount": frame_count,
+            "currentFrame": int(_scene.frame_current),
+            "framesDone": max(0, int(_scene.frame_current) - frame_start),
+            "startedAt": started_at,
+            "updatedAt": time.time(),
+        })
+
+    bpy.app.handlers.render_init.clear()
+    bpy.app.handlers.render_post.clear()
+    bpy.app.handlers.render_cancel.clear()
+    bpy.app.handlers.render_init.append(on_render_init)
+    bpy.app.handlers.render_post.append(on_render_post)
+    bpy.app.handlers.render_cancel.append(on_render_cancel)
     
     # Configure render settings for MP4 output
     # Respect existing Blender file settings (resolution, FPS, frame range)
@@ -128,15 +207,26 @@ try:
         "success": True,
         "output_path": output_path,
         "file_size": file_size,
-        "frame_start": int(scene.frame_start),
-        "frame_end": int(scene.frame_end),
-        "frame_count": int(scene.frame_end - scene.frame_start + 1),
+        "frame_start": frame_start,
+        "frame_end": frame_end,
+        "frame_count": frame_count,
         "fps": int(render.fps),
         "resolution": {
             "x": render.resolution_x,
             "y": render.resolution_y
         }
     }
+
+    _write_progress({
+        "status": "completed",
+        "frameStart": frame_start,
+        "frameEnd": frame_end,
+        "frameCount": frame_count,
+        "currentFrame": frame_end,
+        "framesDone": frame_count,
+        "startedAt": started_at,
+        "updatedAt": time.time(),
+    })
     
     # Output JSON to stderr
     print(json.dumps(result), file=sys.stderr)

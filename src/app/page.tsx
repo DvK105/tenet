@@ -15,6 +15,16 @@ interface FrameData {
 
 type RenderStatus = 'idle' | 'queued' | 'rendering' | 'completed' | 'error'
 
+function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const r = s % 60
+  if (h > 0) return `${h}h ${m}m ${r}s`
+  if (m > 0) return `${m}m ${r}s`
+  return `${r}s`
+}
+
 const main = () => {
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -24,6 +34,8 @@ const main = () => {
   const [error, setError] = useState<string | null>(null)
   const [renderStatus, setRenderStatus] = useState<RenderStatus>('idle')
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [renderProgress, setRenderProgress] = useState<number | null>(null)
+  const [renderEtaSeconds, setRenderEtaSeconds] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -53,6 +65,8 @@ const main = () => {
     setSandboxId(null)
     setRenderStatus('idle')
     setVideoUrl(null)
+    setRenderProgress(null)
+    setRenderEtaSeconds(null)
   }
 
   const handleUpload = async () => {
@@ -106,12 +120,16 @@ const main = () => {
       // Auto-triggered render starts automatically, set status to queued
       setRenderStatus('queued')
       setVideoUrl(null)
+      setRenderProgress(0)
+      setRenderEtaSeconds(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to upload file')
       setFrameData(null)
       setSandboxId(null)
       setRenderStatus('idle')
       setVideoUrl(null)
+      setRenderProgress(null)
+      setRenderEtaSeconds(null)
     } finally {
       if (progressInterval) {
         clearInterval(progressInterval)
@@ -131,10 +149,24 @@ const main = () => {
       try {
         const response = await fetch(`/api/render-status?sandboxId=${sandboxId}`)
         if (response.ok) {
-          const data = await response.json()
+          const data: {
+            status?: RenderStatus
+            videoUrl?: string
+            progress?: number
+            etaSeconds?: number
+          } = await response.json()
+
+          if (typeof data.progress === 'number' && Number.isFinite(data.progress)) {
+            setRenderProgress(data.progress)
+          }
+
+          if (typeof data.etaSeconds === 'number' && Number.isFinite(data.etaSeconds)) {
+            setRenderEtaSeconds(data.etaSeconds)
+          }
+
           if (data.status === 'completed') {
             setRenderStatus('completed')
-            setVideoUrl(data.videoUrl)
+            setVideoUrl(data.videoUrl ?? null)
             clearInterval(pollInterval)
           } else if (data.status === 'rendering') {
             setRenderStatus('rendering')
@@ -167,6 +199,8 @@ const main = () => {
     setRenderStatus('queued')
     setVideoUrl(null)
     setError(null)
+    setRenderProgress(0)
+    setRenderEtaSeconds(null)
 
     try {
       const response = await fetch('/api/trigger-render', {
@@ -280,7 +314,15 @@ const main = () => {
                     </span>
                   </div>
                   {(renderStatus === 'rendering' || renderStatus === 'queued') && (
-                    <Progress value={renderStatus === 'rendering' ? 50 : 10} />
+                    <Progress value={renderProgress ?? (renderStatus === 'queued' ? 0 : 0)} />
+                  )}
+                  {(renderStatus === 'rendering' || renderStatus === 'queued') && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">ETA:</span>
+                      <span className="text-sm font-semibold">
+                        {renderEtaSeconds !== null ? formatDuration(renderEtaSeconds) : 'Calculating...'}
+                      </span>
+                    </div>
                   )}
                 </div>
                 {renderStatus === 'completed' && videoUrl && (
