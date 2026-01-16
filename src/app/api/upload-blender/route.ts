@@ -64,10 +64,11 @@ export async function POST(request: NextRequest) {
     // Run Blender to extract frame count using E2B SDK v2 commands API
     // Use factory-startup to avoid loading user preferences (faster, more stable)
     // Add --disable-autoexec to skip auto-execution scripts that might cause issues
+    // Increased timeout to 120 seconds for complex files
     // Suppress Blender's stdout warnings by redirecting ONLY stdout to /dev/null
     // Keep stderr available for JSON output and error detection (Python script outputs JSON to stderr)
     // Capture actual exit code before || true masks it
-    const command = `(timeout 25 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
+    const command = `(timeout 120 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
     let result;
     try {
       // Use timeoutMs: 0 so E2B doesn't kill the command early.
@@ -105,17 +106,26 @@ export async function POST(request: NextRequest) {
                         allOutput.match(/\d+\s+Segmentation fault/);
     
     // Check for timeout termination (exit code 124 or "terminated" message)
+    // Also check for "[unknown] terminated" which appears when timeout kills the process
     const hasTimeoutTermination = actualExitCode === 124 || 
+                                  actualExitCode === 143 || // SIGTERM (128 + 15)
                                   allOutput.includes("terminated") ||
-                                  allOutput.match(/\d+:\s*\[unknown\]\s*terminated/i);
+                                  allOutput.includes("[unknown] terminated") ||
+                                  allOutput.match(/\d+:\s*\[unknown\]\s*terminated/i) ||
+                                  allOutput.match(/timeout:\s*command\s+terminated/i);
 
     // Check for timeout termination first
     if (hasTimeoutTermination) {
       throw new Error(
-        `Blender frame extraction timed out after 25 seconds.\n` +
-        `The file may be too complex or corrupted. Try:\n` +
-        `- Opening the file in Blender GUI and saving it in a simpler format\n` +
-        `- Reducing file complexity or removing problematic features`
+        `Blender frame extraction timed out after 120 seconds.\n` +
+        `The file is taking too long to process. This usually means:\n` +
+        `- The file is extremely complex with many objects/animations\n` +
+        `- The file contains features that require extensive processing\n` +
+        `- The file may be corrupted or have compatibility issues\n\n` +
+        `Suggestions:\n` +
+        `- Try opening the file in Blender GUI first to verify it loads\n` +
+        `- Simplify the file by removing unnecessary objects or features\n` +
+        `- Save the file in a newer Blender format if using an old version`
       );
     }
     
@@ -277,10 +287,15 @@ export async function POST(request: NextRequest) {
         
         if (hasTimeoutInOutput) {
           throw new Error(
-            `Blender frame extraction timed out after 25 seconds.\n` +
-            `The file may be too complex or corrupted. Try:\n` +
-            `- Opening the file in Blender GUI and saving it in a simpler format\n` +
-            `- Reducing file complexity or removing problematic features`
+            `Blender frame extraction timed out after 120 seconds.\n` +
+            `The file is taking too long to process. This usually means:\n` +
+            `- The file is extremely complex with many objects/animations\n` +
+            `- The file contains features that require extensive processing\n` +
+            `- The file may be corrupted or have compatibility issues\n\n` +
+            `Suggestions:\n` +
+            `- Try opening the file in Blender GUI first to verify it loads\n` +
+            `- Simplify the file by removing unnecessary objects or features\n` +
+            `- Save the file in a newer Blender format if using an old version`
           );
         }
         
