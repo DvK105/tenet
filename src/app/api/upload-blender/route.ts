@@ -24,6 +24,8 @@ export async function POST(request: NextRequest) {
   let sandbox: Sandbox | null = null;
 
   try {
+    const shouldExtractFrames = request.nextUrl.searchParams.get("extractFrames") === "1";
+
     // Parse multipart form data
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
@@ -55,6 +57,27 @@ export async function POST(request: NextRequest) {
     // Upload Blender file to sandbox (use ArrayBuffer directly)
     const sandboxFilePath = "/tmp/uploaded.blend";
     await sandbox.files.write(sandboxFilePath, bytes);
+
+    // Default behavior: return quickly to avoid serverless timeouts.
+    // Trigger render asynchronously via Inngest.
+    if (!shouldExtractFrames) {
+      try {
+        await inngest.send({
+          name: "render/invoked",
+          data: {
+            sandboxId: sandbox.sandboxId,
+          },
+        });
+        console.log("Auto-triggered render function for sandbox:", sandbox.sandboxId);
+      } catch (inngestError) {
+        console.error("Failed to trigger Inngest render function:", inngestError);
+      }
+
+      return NextResponse.json({
+        success: true,
+        sandboxId: sandbox.sandboxId,
+      });
+    }
 
     // Upload the extract_frames.py script to sandbox
     // Read the script from the e2b-template directory
