@@ -3,6 +3,7 @@ import { stat } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { Sandbox } from "e2b";
+import { getRenderObjectUrl, getSupabaseRendersBucket, hasSupabaseConfig, isSupabaseBucketPublic, tryGetSupabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -45,6 +46,37 @@ export async function GET(request: NextRequest) {
         { error: "sandboxId is required" },
         { status: 400 }
       );
+    }
+
+    if (hasSupabaseConfig()) {
+      try {
+        const supabase = tryGetSupabaseAdmin();
+        if (supabase) {
+          const bucket = getSupabaseRendersBucket();
+          const objectPath = `${sandboxId}.mp4`;
+
+          const { data, error } = await supabase.storage.from(bucket).list("", {
+            limit: 1,
+            search: objectPath,
+          });
+
+          if (!error && Array.isArray(data) && data.some((o) => o.name === objectPath)) {
+            const url = await getRenderObjectUrl(objectPath);
+            const fileSize = data.find((o) => o.name === objectPath)?.metadata?.size;
+            return NextResponse.json({
+              status: "completed",
+              videoUrl: url,
+              fileSize: typeof fileSize === "number" ? fileSize : undefined,
+              progress: 100,
+              etaSeconds: 0,
+              storage: "supabase",
+              publicBucket: isSupabaseBucketPublic(),
+            });
+          }
+        }
+      } catch {
+        // ignore supabase errors and fall back to sandbox progress
+      }
     }
 
     // Check if video file exists in public/renders directory

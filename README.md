@@ -7,7 +7,7 @@ Tenet is a Next.js app that lets you upload a `.blend` file and renders it to an
 - **Web app**: Next.js App Router UI.
 - **Orchestration**: Inngest function `render/invoked`.
 - **Compute**: E2B sandbox template `blender-headless-template` (Ubuntu + Blender + ffmpeg).
-- **Output**: Final MP4 is stored under `public/renders/<sandboxId>.mp4` and served at `/renders/<sandboxId>.mp4`.
+- **Output**: Final MP4 is uploaded to Supabase Storage (recommended for Vercel). If Supabase is not configured, Tenet attempts a local write under `public/renders/`.
 
 ## Request / render flow
 
@@ -20,11 +20,12 @@ Tenet is a Next.js app that lets you upload a `.blend` file and renders it to an
    - Uploads `e2b-template/render_mp4.py` to the sandbox.
    - Resolves frame range (either from provided `frameData` or by running `e2b-template/extract_frames.py`).
    - Runs Blender headlessly to produce `/tmp/output.mp4`.
-   - Downloads the MP4 and writes it to `public/renders/<sandboxId>.mp4`.
+   - Downloads the MP4 and uploads it to Supabase Storage (fallback: local `public/renders/`).
    - Kills the sandbox (best-effort cleanup).
 
 3. **Progress / status polling** (`src/app/api/render-status/route.ts`)
-   - If `public/renders/<sandboxId>.mp4` exists: returns `completed` with `videoUrl`.
+   - If the MP4 exists in Supabase Storage: returns `completed` with a public (or signed) `videoUrl`.
+   - Otherwise, if `public/renders/<sandboxId>.mp4` exists: returns `completed` with `videoUrl`.
    - Otherwise reads `/tmp/render_progress.json` from the sandbox and returns `rendering` + `progress` + `etaSeconds`.
 
 4. **Manual trigger (optional)** (`src/app/api/trigger-render/route.ts`)
@@ -71,3 +72,16 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+## Supabase Storage setup (recommended on Vercel)
+
+1. Create a Supabase project.
+2. Create a Storage bucket (default name is `renders`).
+3. Set Vercel environment variables:
+
+- **`SUPABASE_URL`**
+- **`SUPABASE_SERVICE_ROLE_KEY`**
+- **`SUPABASE_STORAGE_BUCKET`** (optional, defaults to `renders`)
+- **`SUPABASE_STORAGE_PUBLIC`**
+  - Set to `1` if the bucket is public.
+  - Leave unset/`0` for private buckets (Tenet will return signed URLs).

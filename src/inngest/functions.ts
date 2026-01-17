@@ -4,6 +4,7 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { writeFile } from "fs/promises";
 import { mkdir } from "fs/promises";
+import { getRenderObjectUrl, getSupabaseRendersBucket, hasSupabaseConfig, tryGetSupabaseAdmin } from "@/lib/supabase-admin";
 
 // Simple in-memory cache for rendered videos (key: sandboxId, value: file path)
 // In production, you'd want to use proper storage (S3, etc.)
@@ -509,25 +510,13 @@ export const renderFunction = inngest.createFunction(
       // Step 6: Store video file locally (temporary solution)
       // In production, upload to S3 or similar storage
       const videoPath = await step.run("store-video-file", async () => {
-        // Create public directory if it doesn't exist
-        const publicDir = join(process.cwd(), "public", "renders");
-        try {
-          await mkdir(publicDir, { recursive: true });
-        } catch {
-          // Directory might already exist
-        }
-
-        // Store video file (videoData is a Buffer)
-        const fileName = `${sandboxId}.mp4`;
-        const filePath = join(publicDir, fileName);
-        // Ensure videoData is a Buffer or Uint8Array
-        // Handle serialized Buffer objects from Inngest step results
+        // Ensure videoData is a Buffer
         let bufferToWrite: Buffer;
         if (Buffer.isBuffer(videoData)) {
           bufferToWrite = videoData;
-        } else if (videoData && typeof videoData === 'object' && 'type' in videoData && videoData.type === 'Buffer' && 'data' in videoData && Array.isArray(videoData.data)) {
-          // Handle serialized Buffer: { type: 'Buffer', data: number[] }
-          bufferToWrite = Buffer.from(videoData.data);
+        } else if (videoData && typeof videoData === "object" && "type" in videoData && (videoData as { type?: unknown }).type === "Buffer" && "data" in videoData) {
+          const data = (videoData as { data?: unknown }).data;
+          bufferToWrite = Buffer.from(Array.isArray(data) ? data : []);
         } else if (videoData instanceof Uint8Array) {
           bufferToWrite = Buffer.from(videoData);
         } else if (Array.isArray(videoData)) {
@@ -535,16 +524,44 @@ export const renderFunction = inngest.createFunction(
         } else if (videoData instanceof ArrayBuffer) {
           bufferToWrite = Buffer.from(videoData);
         } else {
-          // Fallback: try to convert to buffer
-          bufferToWrite = Buffer.from(String(videoData), 'binary');
+          bufferToWrite = Buffer.from(String(videoData), "binary");
         }
-        await writeFile(filePath, bufferToWrite);
-        
-        // Cache the path
-        videoCache.set(sandboxId, `/renders/${fileName}`);
-        
-        console.log(`Stored video file: ${filePath}`);
-        return `/renders/${fileName}`;
+
+        if (hasSupabaseConfig()) {
+          const supabase = tryGetSupabaseAdmin();
+          if (!supabase) throw new Error("Supabase config missing");
+          const bucket = getSupabaseRendersBucket();
+          const objectPath = `${sandboxId}.mp4`;
+
+          const { error } = await supabase.storage
+            .from(bucket)
+            .upload(objectPath, bufferToWrite, {
+              contentType: "video/mp4",
+              upsert: true,
+            });
+
+          if (error) {
+            throw new Error(`Supabase upload failed: ${error.message}`);
+          }
+
+          const url = await getRenderObjectUrl(objectPath);
+          videoCache.set(sandboxId, url);
+          return url;
+        }
+
+        // Fallback to local write (not reliable on Vercel).
+        const publicDir = join(process.cwd(), "public", "renders");
+        try {
+          await mkdir(publicDir, { recursive: true });
+          const fileName = `${sandboxId}.mp4`;
+          const filePath = join(publicDir, fileName);
+          await writeFile(filePath, bufferToWrite);
+          videoCache.set(sandboxId, `/renders/${fileName}`);
+          console.log(`Stored video file: ${filePath}`);
+          return `/renders/${fileName}`;
+        } catch (e) {
+          throw new Error(`No persistent storage configured (Supabase missing) and local write failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       });
 
       await step.sleep("yield-before-cleanup", "1s");
