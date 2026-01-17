@@ -13,6 +13,7 @@ interface RenderQueueProps {
     progress?: number
     etaSeconds?: number
     videoUrl?: string
+    errorMessage?: string
   }>
   onRefresh?: () => void | Promise<void>
   onClear?: () => void
@@ -86,6 +87,11 @@ export function RenderQueue({ jobs, onRefresh, onClear }: RenderQueueProps) {
                       </span>
                       <span>{typeof job.progress === "number" ? `${Math.round(job.progress)}%` : "-"}</span>
                     </div>
+                    {job.status === "error" && typeof job.errorMessage === "string" && job.errorMessage.length > 0 ? (
+                      <div className="text-[10px] text-destructive/80 break-words">
+                        {job.errorMessage}
+                      </div>
+                    ) : null}
                     <Progress value={job.progress ?? 0} className="h-1 rounded-full bg-muted" />
                   </div>
                 </TableCell>

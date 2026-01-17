@@ -8,6 +8,7 @@ import { RenderQueue } from "@/components/dashboard/render-queue"
 import { PerformanceGraph } from "@/components/dashboard/performance-graph"
 import { SystemStatus } from "@/components/dashboard/system-status"
 import { getSupabaseBrowserClient, getSupabaseInputsBucket } from "@/lib/supabase-browser"
+import { toast } from "sonner"
 
 type RenderStatusResponse = {
   status?: "rendering" | "completed" | "error"
@@ -27,6 +28,7 @@ type RenderJob = {
   progress?: number
   etaSeconds?: number
   videoUrl?: string
+  errorMessage?: string
 }
 
 export function RenderDashboard() {
@@ -174,8 +176,10 @@ export function RenderDashboard() {
             })
 
           if (uploadError) {
+            const msg = `Supabase upload failed: ${uploadError.message}`
+            toast.error(msg)
             setJobs((prev) =>
-              prev.map((j) => (j.id === renderId ? { ...j, status: "error" } : j))
+              prev.map((j) => (j.id === renderId ? { ...j, status: "error", errorMessage: msg } : j))
             )
             return
           }
@@ -192,8 +196,16 @@ export function RenderDashboard() {
           })
 
           if (!res.ok) {
+            let details = ""
+            try {
+              details = await res.text()
+            } catch {
+              details = ""
+            }
+            const msg = `Trigger render failed (${res.status}): ${details || res.statusText}`
+            toast.error(msg)
             setJobs((prev) =>
-              prev.map((j) => (j.id === renderId ? { ...j, status: "error" } : j))
+              prev.map((j) => (j.id === renderId ? { ...j, status: "error", errorMessage: msg } : j))
             )
             return
           }
@@ -204,12 +216,17 @@ export function RenderDashboard() {
                 ? {
                     ...j,
                     status: "rendering",
+                    errorMessage: undefined,
                   }
                 : j
             )
           )
-        } catch {
-          setJobs((prev) => prev.map((j) => (j.id === renderId ? { ...j, status: "error" } : j)))
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          toast.error(msg)
+          setJobs((prev) =>
+            prev.map((j) => (j.id === renderId ? { ...j, status: "error", errorMessage: msg } : j))
+          )
         }
       })
     )
