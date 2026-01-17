@@ -19,7 +19,7 @@ export class SandboxService {
    */
   async create(options: SandboxCreationOptions = {}): Promise<SandboxInstance> {
     try {
-      const template = options.template || appConfig.e2b.template;
+      const template = options.template || appConfig.e2b.template || "blender-headless-template";
       const timeoutMs = options.timeoutMs || appConfig.e2b.defaultTimeoutMs;
 
       const sandbox = await Sandbox.create(template, {
