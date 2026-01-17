@@ -18,6 +18,14 @@ type SandboxProgress = {
   updatedAt?: number;
 };
 
+function decodeSandboxText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf-8");
+  if (value instanceof ArrayBuffer) return Buffer.from(value).toString("utf-8");
+  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer).toString("utf-8");
+  return Buffer.from(value as ArrayBuffer).toString("utf-8");
+}
+
 function safeNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   return undefined;
@@ -66,7 +74,7 @@ export async function GET(request: NextRequest) {
       // Video not ready yet - attempt to read progress from the E2B sandbox.
       try {
         const sandbox = await Sandbox.connect(sandboxId, {
-          timeoutMs: 10_000,
+          timeoutMs: 20_000,
         });
 
         let progressRaw: unknown;
@@ -78,12 +86,7 @@ export async function GET(request: NextRequest) {
           });
         }
 
-        const progressText =
-          typeof progressRaw === "string"
-            ? progressRaw
-            : Buffer.isBuffer(progressRaw)
-              ? progressRaw.toString("utf-8")
-              : Buffer.from(progressRaw as ArrayBuffer).toString("utf-8");
+        const progressText = decodeSandboxText(progressRaw);
 
         const parsed = JSON.parse(progressText) as SandboxProgress;
         const frameCount = safeNumber(parsed.frameCount);
@@ -104,10 +107,13 @@ export async function GET(request: NextRequest) {
           etaSeconds = clamp(secondsPerFrame * remainingFrames, 0, 36000);
         }
 
+        const apiStatus: "rendering" | "completed" | "error" =
+          parsed.status === "completed" ? "completed" : parsed.status === "cancelled" ? "error" : "rendering";
+
         return NextResponse.json({
-          status: parsed.status === "cancelled" ? "error" : "rendering",
-          progress,
-          etaSeconds,
+          status: apiStatus,
+          progress: apiStatus === "completed" ? 100 : progress,
+          etaSeconds: apiStatus === "completed" ? 0 : etaSeconds,
           frameCount,
           framesDone,
         });

@@ -37,7 +37,7 @@ export function RenderDashboard() {
   useEffect(() => {
     if (pollingTargets.length === 0) return
 
-    const interval = window.setInterval(async () => {
+    const pollOnce = async () => {
       await Promise.all(
         pollingTargets.map(async (job) => {
           try {
@@ -72,7 +72,11 @@ export function RenderDashboard() {
           }
         })
       )
-    }, 2000)
+    }
+
+    void pollOnce()
+
+    const interval = window.setInterval(pollOnce, 270000)
 
     return () => window.clearInterval(interval)
   }, [pollingTargets])
