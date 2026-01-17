@@ -4,6 +4,9 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { inngest } from "@/inngest/client";
 
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 type BlendFrameData = {
   frame_start?: number;
   frame_end?: number;

@@ -4,6 +4,9 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { Sandbox } from "e2b";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 type SandboxProgress = {
   status?: "rendering" | "completed" | "cancelled";
   frameStart?: number;
