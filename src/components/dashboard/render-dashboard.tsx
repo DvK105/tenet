@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Sidebar } from "@/components/dashboard/sidebar"
 import { Header } from "@/components/dashboard/header"
 import { UploadZone } from "@/components/dashboard/upload-zone"
@@ -32,14 +32,23 @@ export function RenderDashboard() {
   const [jobs, setJobs] = useState<RenderJob[]>([])
   const [currentPage, setCurrentPage] = useState<"upload" | "graph" | "status" | "account">("upload")
 
-  const pollingTargets = useMemo(() => jobs.filter((j) => j.status === "rendering"), [jobs])
+  const jobsRef = useRef<RenderJob[]>([])
+  const pollIntervalRef = useRef<number | null>(null)
 
   useEffect(() => {
-    if (pollingTargets.length === 0) return
+    jobsRef.current = jobs
+  }, [jobs])
 
+  const pollingTargets = useMemo(() => jobs.filter((j) => j.status === "rendering"), [jobs])
+  const hasPollingTargets = pollingTargets.length > 0
+
+  useEffect(() => {
     const pollOnce = async () => {
+      const targets = jobsRef.current.filter((j) => j.status === "rendering")
+      if (targets.length === 0) return
+
       await Promise.all(
-        pollingTargets.map(async (job) => {
+        targets.map(async (job) => {
           try {
             const res = await fetch(`/api/render-status?sandboxId=${encodeURIComponent(job.id)}`, {
               cache: "no-store",
@@ -74,12 +83,27 @@ export function RenderDashboard() {
       )
     }
 
+    if (!hasPollingTargets) {
+      if (pollIntervalRef.current !== null) {
+        window.clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
+      return
+    }
+
     void pollOnce()
 
-    const interval = window.setInterval(pollOnce, 270000)
+    if (pollIntervalRef.current === null) {
+      pollIntervalRef.current = window.setInterval(pollOnce, 270000)
+    }
 
-    return () => window.clearInterval(interval)
-  }, [pollingTargets])
+    return () => {
+      if (pollIntervalRef.current !== null) {
+        window.clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
+    }
+  }, [hasPollingTargets])
 
   const refreshRenderingJobs = async () => {
     const targets = jobs.filter((j) => j.status === "rendering")
