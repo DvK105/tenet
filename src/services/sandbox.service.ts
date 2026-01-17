@@ -59,7 +59,9 @@ export class SandboxService {
   ): Promise<void> {
     try {
       const buffer = toBuffer(data);
-      await sandbox.files.write(sandboxPath, buffer);
+      const arrayBuffer = new ArrayBuffer(buffer.length);
+      new Uint8Array(arrayBuffer).set(buffer);
+      await sandbox.files.write(sandboxPath, arrayBuffer);
     } catch (error) {
       throw new SandboxError(
         `Failed to upload file to sandbox ${sandbox.sandboxId}: ${sandboxPath}`,
