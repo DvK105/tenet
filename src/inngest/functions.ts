@@ -78,6 +78,12 @@ export const renderFunction = inngest.createFunction(
       throw new Error("sandboxId is required in event data");
     }
 
+    const needsFrameDetection = !(
+      frameData &&
+      typeof frameData.frameStart === "number" &&
+      typeof frameData.frameEnd === "number"
+    );
+
     try {
       // Step 1: Verify the sandbox exists + has the Blender file.
       // IMPORTANT: Never return the Sandbox object from a step (it's not serializable across invocations).
@@ -116,7 +122,7 @@ export const renderFunction = inngest.createFunction(
         return scriptSandboxPath;
       });
 
-      if (parallelChunksSafe) {
+      if (parallelChunksSafe || needsFrameDetection) {
         await step.run("upload-extract-frames-script", async () => {
           const scriptPath = join(process.cwd(), "e2b-template", "extract_frames.py");
           let scriptContent: string;
