@@ -18,6 +18,8 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const isBlendFile = (file: File) => file.name.toLowerCase().endsWith(".blend")
+
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -45,7 +47,9 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
   }
 
   const addFiles = (newFiles: File[]) => {
-    setStagedFiles((prev) => [...prev, ...newFiles])
+    const blendFiles = newFiles.filter(isBlendFile)
+    if (blendFiles.length === 0) return
+    setStagedFiles((prev) => [...prev, ...blendFiles])
   }
 
   const removeFile = (index: number) => {
@@ -95,7 +99,14 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
             onDragOver={handleDrag}
             onDrop={handleDrop}
           >
-            <input ref={inputRef} type="file" className="sr-only" multiple onChange={handleChange} />
+            <input
+              ref={inputRef}
+              type="file"
+              className="sr-only"
+              multiple
+              accept=".blend"
+              onChange={handleChange}
+            />
 
             <div className="flex flex-col items-center gap-4 z-10">
               <div
@@ -105,7 +116,7 @@ export function UploadZone({ onUpload }: UploadZoneProps) {
               </div>
               <div className="text-center space-y-1">
                 <p className="text-sm font-medium">DRAG_AND_DROP_FILES</p>
-                <p className="text-xs font-mono text-muted-foreground">SUPPORTED: .BLEND .C4D .HIP .MA</p>
+                <p className="text-xs font-mono text-muted-foreground">SUPPORTED: .BLEND</p>
               </div>
               <Button
                 variant="outline"
