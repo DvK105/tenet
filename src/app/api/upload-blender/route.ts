@@ -25,6 +25,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const shouldExtractFrames = request.nextUrl.searchParams.get("extractFrames") === "1";
+    const parallelChunksParam = request.nextUrl.searchParams.get("parallelChunks");
+    const parallelChunks = parallelChunksParam ? Number.parseInt(parallelChunksParam, 10) : undefined;
+    const parallelChunksSafe = typeof parallelChunks === "number" && Number.isFinite(parallelChunks) && parallelChunks >= 2 ? parallelChunks : undefined;
 
     // Parse multipart form data
     const formData = await request.formData();
@@ -66,6 +69,7 @@ export async function POST(request: NextRequest) {
           name: "render/invoked",
           data: {
             sandboxId: sandbox.sandboxId,
+            parallelChunks: parallelChunksSafe,
           },
         });
         console.log("Auto-triggered render function for sandbox:", sandbox.sandboxId);
@@ -463,6 +467,7 @@ export async function POST(request: NextRequest) {
         data: {
           sandboxId: sandbox.sandboxId,
           frameData: responseFrameData,
+          parallelChunks: parallelChunksSafe,
         },
       });
       console.log("Auto-triggered render function for sandbox:", sandbox.sandboxId);

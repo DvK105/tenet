@@ -38,8 +38,8 @@ for i, arg in enumerate(sys.argv):
 if not blend_file:
     blend_file = "/tmp/uploaded.blend"
 
-output_path = "/tmp/output.mp4"
-progress_path = "/tmp/render_progress.json"
+output_path = os.environ.get("TENET_OUTPUT_PATH") or "/tmp/output.mp4"
+progress_path = os.environ.get("TENET_PROGRESS_PATH") or "/tmp/render_progress.json"
 
 
 def _read_existing_progress():
@@ -77,8 +77,6 @@ try:
     # Use similar strategies as extract_frames.py
     opened = False
     strategies = [
-        # Most minimal: skip UI, scripts, textures, sounds, and recover data
-        {"filepath": blend_file, "load_ui": False, "use_scripts": False, "use_embedded_data": False},
         # Skip UI and scripts
         {"filepath": blend_file, "load_ui": False, "use_scripts": False},
         # Skip UI only
@@ -108,9 +106,16 @@ try:
     scene = bpy.context.scene
 
     started_at = _ensure_started_at()
-    frame_start = int(scene.frame_start)
-    frame_end = int(scene.frame_end)
+    override_frame_start = os.environ.get("TENET_FRAME_START")
+    override_frame_end = os.environ.get("TENET_FRAME_END")
+
+    frame_start = int(override_frame_start) if override_frame_start else int(scene.frame_start)
+    frame_end = int(override_frame_end) if override_frame_end else int(scene.frame_end)
     frame_count = int(frame_end - frame_start + 1)
+
+    scene.frame_start = frame_start
+    scene.frame_end = frame_end
+    scene.frame_current = frame_start
 
     def on_render_init(_scene):
         _write_progress({
@@ -160,6 +165,39 @@ try:
     # Configure render settings for MP4 output
     # Respect existing Blender file settings (resolution, FPS, frame range)
     render = scene.render
+
+    render.use_persistent_data = True
+
+    if os.environ.get("TENET_ENABLE_CYCLES_GPU") == "1":
+        try:
+            if render.engine == "CYCLES":
+                prefs = bpy.context.preferences
+                cycles_prefs = prefs.addons["cycles"].preferences
+
+                for device_type in ("OPTIX", "CUDA", "HIP", "ONEAPI", "METAL"):
+                    try:
+                        cycles_prefs.compute_device_type = device_type
+                        break
+                    except Exception:
+                        continue
+
+                try:
+                    cycles_prefs.get_devices()
+                except Exception:
+                    pass
+
+                for device in getattr(cycles_prefs, "devices", []):
+                    try:
+                        device.use = True
+                    except Exception:
+                        pass
+
+                try:
+                    scene.cycles.device = "GPU"
+                except Exception:
+                    pass
+        except Exception:
+            pass
     
     # Set output format to FFmpeg video
     render.image_settings.file_format = 'FFMPEG'
