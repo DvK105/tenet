@@ -25,6 +25,9 @@ export function getSupabaseBrowserClient(): ReturnType<typeof createClient> | nu
     // Return null instead of throwing to prevent toast notifications
     // The calling code should handle this gracefully
     console.warn("Supabase client not configured:", error instanceof Error ? error.message : String(error));
+    // Diagnostic: log which env vars are missing
+    console.warn("NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "set" : "MISSING");
+    console.warn("NEXT_PUBLIC_SUPABASE_ANON_KEY:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "set" : "MISSING");
     return null;
   }
 }
