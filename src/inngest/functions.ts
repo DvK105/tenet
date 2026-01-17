@@ -9,6 +9,25 @@ import { mkdir } from "fs/promises";
 // In production, you'd want to use proper storage (S3, etc.)
 const videoCache = new Map<string, string>();
 
+function decodeSandboxText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf-8");
+  if (value instanceof ArrayBuffer) return Buffer.from(value).toString("utf-8");
+  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer).toString("utf-8");
+  return Buffer.from(value as ArrayBuffer).toString("utf-8");
+}
+
+type RenderProgress = {
+  status?: "rendering" | "completed" | "cancelled";
+  frameStart?: number;
+  frameEnd?: number;
+  frameCount?: number;
+  currentFrame?: number;
+  framesDone?: number;
+  startedAt?: number;
+  updatedAt?: number;
+};
+
 export const renderFunction = inngest.createFunction(
   { id: "render-function" },
   { event: "render/invoked" },
@@ -68,137 +87,86 @@ export const renderFunction = inngest.createFunction(
         return scriptSandboxPath;
       });
 
-      // Step 3: Execute Blender render command
-      const renderResult = await step.run("execute-blender-render", async () => {
+      // Step 3: Start Blender render as a background process
+      await step.run("start-blender-render", async () => {
         if (!sandbox) {
           throw new Error("Sandbox not connected");
         }
+
         const scriptSandboxPath = "/tmp/render_mp4.py";
         const blendFilePath = "/tmp/uploaded.blend";
-        const outputPath = "/tmp/output.mp4";
 
-        // Use factory-startup and disable-autoexec for stability
-        // Set a longer timeout for rendering (up to 10 hours = 36000 seconds)
-        // Capture exit code before || true masks it, and preserve stderr for JSON output
-        // Python script outputs JSON to stderr, so we preserve stderr
-        const command = `(timeout 36000 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${blendFilePath}; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
-        
-        console.log("Starting Blender render...");
-        let result;
-        try {
-          // Use timeoutMs: 0 so E2B doesn't add its own deadline;
-          // the shell-level `timeout 36000` (10 hours) around Blender enforces the hard cap.
-          result = await sandbox.commands.run(command, {
-            timeoutMs: 0,
-          });
-        } catch (error: any) {
-          // E2B SDK throws CommandExitError when exit code is non-zero
-          if (error.exitCode !== undefined && (error.stdout !== undefined || error.stderr !== undefined)) {
-            result = {
-              exitCode: error.exitCode,
-              stdout: error.stdout || "",
-              stderr: error.stderr || "",
-            };
-          } else {
-            throw error;
-          }
-        }
+        const command = [
+          "bash -lc",
+          JSON.stringify(
+            [
+              "set -euo pipefail",
+              "rm -f /tmp/output.mp4 /tmp/render_progress.json /tmp/render_stdout.log /tmp/render_stderr.log /tmp/render_pid.txt",
+              `nohup timeout 36000 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${blendFilePath} ` +
+                ">/tmp/render_stdout.log 2>/tmp/render_stderr.log </dev/null &",
+              "echo $! > /tmp/render_pid.txt",
+              "echo STARTED",
+            ].join("; ")
+          ),
+        ].join(" ");
 
-        // Extract actual exit code from output if present
-        let actualExitCode = result.exitCode;
-        const exitCodeMatch = (result.stderr || result.stdout || "").match(/EXIT_CODE:(\d+)/);
-        if (exitCodeMatch) {
-          actualExitCode = parseInt(exitCodeMatch[1], 10);
-        }
-
-        // Check for segmentation fault in output
-        const allOutput = (result.stderr || "") + (result.stdout || "");
-        const hasSegfault = allOutput.includes("Segmentation fault") || 
-                            allOutput.includes("segfault") || 
-                            allOutput.includes("SIGSEGV") ||
-                            allOutput.match(/\d+\s+Segmentation fault/);
-        
-        // Check for timeout termination (exit code 124 or "terminated" message)
-        const hasTimeoutTermination = actualExitCode === 124 || 
-                                      allOutput.includes("terminated") ||
-                                      allOutput.match(/\d+:\s*\[unknown\]\s*terminated/i);
-
-        // Parse render result from stderr (where our JSON is)
-        // Remove EXIT_CODE marker lines before parsing
-        let outputText = (result.stderr || result.stdout || "").replace(/EXIT_CODE:\d+/g, "").trim();
-        let renderData: any = null;
-        
-        try {
-          // Try to find JSON in output
-          const lines = outputText.split('\n');
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith('{') && (trimmed.includes('"success"') || trimmed.includes('"error"'))) {
-              try {
-                const candidate = JSON.parse(trimmed);
-                if (candidate.success !== undefined || candidate.error !== undefined) {
-                  renderData = candidate;
-                  break;
-                }
-              } catch {
-                // Not valid JSON, continue
-              }
-            }
-          }
-          
-          // If not found line-by-line, try to extract JSON from entire output
-          if (!renderData) {
-            const jsonMatch = outputText.match(/\{[\s\S]*?\}/);
-            if (jsonMatch) {
-              renderData = JSON.parse(jsonMatch[0]);
-            }
-          }
-        } catch (parseError) {
-          console.error("Failed to parse render output:", parseError);
-        }
-
-        // Check for timeout termination first
-        if (hasTimeoutTermination) {
-          throw new Error(
-            `Blender render timed out after 10 hours.\n` +
-            `The render is taking longer than expected. Possible solutions:\n` +
-            `- Reduce the number of frames or complexity\n` +
-            `- Lower the resolution or quality settings\n` +
-            `- Split the animation into smaller segments`
-          );
-        }
-        
-        // Check for segfault before checking render data
-        if (hasSegfault || actualExitCode === 139) {
-          const errorMsg = renderData?.error || "Segmentation fault";
-          throw new Error(
-            `Blender crashed during render: ${errorMsg}\n` +
-            `The file may contain features incompatible with headless rendering.\n` +
-            `Try simplifying the file or removing complex features.`
-          );
-        }
-
-        if (renderData && renderData.error) {
-          throw new Error(`Blender render error: ${renderData.error} (error_type: ${renderData.error_type || 'unknown'})`);
-        }
-
-        if (actualExitCode !== 0 && actualExitCode !== undefined && actualExitCode !== 1) {
-          throw new Error(`Blender render failed with exit code ${actualExitCode}. Output: ${outputText.substring(0, 1000)}`);
-        }
-
-        // Verify output file exists
-        const files = await sandbox.files.list("/tmp");
-        const outputFile = files.find((f: { name: string }) => f.name === "output.mp4");
-        
-        if (!outputFile) {
-          throw new Error("Output MP4 file was not created");
-        }
-
-        console.log("Blender render completed successfully");
-        return { renderData, outputPath };
+        await sandbox.commands.run(command, { timeoutMs: 60_000 });
+        console.log("Started Blender render in background");
       });
 
-      // Step 4: Read MP4 file from sandbox
+      // Step 4: Poll progress until completion (each iteration is short + sleeps)
+      const maxPolls = 1200;
+      let lastProgress: RenderProgress | null = null;
+      let completed = false;
+
+      for (let i = 0; i < maxPolls; i++) {
+        const poll = await step.run(`poll-render-status-${i}`, async () => {
+          if (!sandbox) {
+            throw new Error("Sandbox not connected");
+          }
+
+          const files = await sandbox.files.list("/tmp");
+          const hasMp4 = files.some((f: { name: string }) => f.name === "output.mp4");
+
+          let progress: RenderProgress | null = null;
+          try {
+            const raw = await sandbox.files.read("/tmp/render_progress.json");
+            const text = decodeSandboxText(raw);
+            progress = JSON.parse(text) as RenderProgress;
+          } catch {
+            progress = null;
+          }
+
+          if (progress?.status === "cancelled") {
+            let stderrText = "";
+            try {
+              const rawErr = await sandbox.files.read("/tmp/render_stderr.log");
+              stderrText = decodeSandboxText(rawErr).slice(0, 2000);
+            } catch {
+              // ignore
+            }
+            throw new Error(`Render cancelled in sandbox. Logs: ${stderrText}`);
+          }
+
+          if (progress?.status === "completed" || hasMp4) {
+            return { done: true, progress };
+          }
+
+          return { done: false, progress };
+        });
+
+        lastProgress = poll.progress;
+        completed = poll.done;
+        if (completed) break;
+
+        await step.sleep(`wait-before-next-poll-${i}`, "30s");
+      }
+
+      if (!completed) {
+        throw new Error("Render did not complete within expected polling window");
+      }
+
+      // Step 5: Read MP4 file from sandbox
       const videoData = await step.run("read-mp4-file", async () => {
         if (!sandbox) {
           throw new Error("Sandbox not connected");
@@ -225,7 +193,7 @@ export const renderFunction = inngest.createFunction(
         return buffer;
       });
 
-      // Step 5: Store video file locally (temporary solution)
+      // Step 6: Store video file locally (temporary solution)
       // In production, upload to S3 or similar storage
       const videoPath = await step.run("store-video-file", async () => {
         // Create public directory if it doesn't exist
@@ -266,7 +234,7 @@ export const renderFunction = inngest.createFunction(
         return `/renders/${fileName}`;
       });
 
-      // Step 6: Clean up sandbox
+      // Step 7: Clean up sandbox
       await step.run("cleanup-sandbox", async () => {
         if (!sandbox) {
           return;
@@ -284,7 +252,7 @@ export const renderFunction = inngest.createFunction(
         success: true,
         videoUrl: videoPath,
         sandboxId,
-        frameData: frameData || renderResult.renderData,
+        frameData: frameData || lastProgress,
       };
     } catch (error) {
       // Clean up sandbox on error

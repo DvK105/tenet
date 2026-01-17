@@ -25,6 +25,11 @@ function formatDuration(seconds: number): string {
   return `${r}s`
 }
 
+function formatHours(seconds: number): string {
+  const hours = Math.max(0, seconds) / 3600
+  return `${hours.toFixed(2)}h`
+}
+
 const main = () => {
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -321,6 +326,14 @@ const main = () => {
                       <span className="text-sm text-muted-foreground">ETA:</span>
                       <span className="text-sm font-semibold">
                         {renderEtaSeconds !== null ? formatDuration(renderEtaSeconds) : 'Calculating...'}
+                      </span>
+                    </div>
+                  )}
+                  {(renderStatus === 'rendering' || renderStatus === 'queued') && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">ETA (hours):</span>
+                      <span className="text-sm font-semibold">
+                        {renderEtaSeconds !== null ? formatHours(renderEtaSeconds) : 'Calculating...'}
                       </span>
                     </div>
                   )}
