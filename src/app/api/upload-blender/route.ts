@@ -4,6 +4,19 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { inngest } from "@/inngest/client";
 
+type BlendFrameData = {
+  frame_start?: number;
+  frame_end?: number;
+  frame_count?: number;
+  fps?: number;
+  error?: string;
+  error_type?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export async function POST(request: NextRequest) {
   let sandbox: Sandbox | null = null;
 
@@ -69,21 +82,27 @@ export async function POST(request: NextRequest) {
     // Keep stderr available for JSON output and error detection (Python script outputs JSON to stderr)
     // Capture actual exit code before || true masks it
     const command = `(timeout 120 blender --background --factory-startup --disable-autoexec --python ${scriptSandboxPath} -- ${sandboxFilePath} > /dev/null; EXIT=$?; echo "EXIT_CODE:$EXIT" >&2; exit $EXIT) 2>&1; true`;
-    let result;
+    let result: { exitCode?: number; stdout?: string; stderr?: string };
     try {
       // Use timeoutMs: 0 so E2B doesn't kill the command early.
       // The shell-level `timeout 25` around Blender will still enforce a hard cap.
       result = await sandbox.commands.run(command, {
         timeoutMs: 0,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       // E2B SDK throws CommandExitError when exit code is non-zero
       // Extract the result from the error object
-      if (error.exitCode !== undefined && (error.stdout !== undefined || error.stderr !== undefined)) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "exitCode" in error &&
+        ("stdout" in error || "stderr" in error)
+      ) {
+        const e = error as { exitCode?: number; stdout?: string; stderr?: string };
         result = {
-          exitCode: error.exitCode,
-          stdout: error.stdout || "",
-          stderr: error.stderr || "",
+          exitCode: e.exitCode,
+          stdout: e.stdout || "",
+          stderr: e.stderr || "",
         };
       } else {
         // Re-throw if it's not a CommandExitError
@@ -225,23 +244,27 @@ export async function POST(request: NextRequest) {
     // The Python script outputs JSON to stderr to avoid Blender's stdout warnings
     // Check stderr first (where our JSON is), then stdout as fallback
     // Remove EXIT_CODE marker lines before parsing
-    let outputText = (result.stderr || result.stdout || "").replace(/EXIT_CODE:\d+/g, "").trim();
-    let frameData;
+    const outputText = (result.stderr || result.stdout || "").replace(/EXIT_CODE:\d+/g, "").trim();
+    let frameData: BlendFrameData;
     
     try {
       // Extract JSON from output (should be clean since we suppressed stdout)
       // Try to find and parse JSON objects from the output
       const lines = outputText.split('\n');
-      let parsedData: any = null;
+      let parsedData: unknown = null;
       
       // First, try to find a line that looks like our JSON output
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed.startsWith('{') && (trimmed.includes('"frame_start"') || trimmed.includes('"error"'))) {
           try {
-            const candidate = JSON.parse(trimmed);
+            const candidate: unknown = JSON.parse(trimmed);
             // Verify it has the expected structure
-            if (candidate.frame_start !== undefined || candidate.error !== undefined) {
+            if (
+              typeof candidate === "object" &&
+              candidate !== null &&
+              ("frame_start" in candidate || "error" in candidate)
+            ) {
               parsedData = candidate;
               break;
             }
@@ -265,8 +288,12 @@ export async function POST(request: NextRequest) {
             if (braceCount === 0 && startIdx !== -1) {
               const candidate = outputText.substring(startIdx, i + 1);
               try {
-                const parsed = JSON.parse(candidate);
-                if (parsed.frame_start !== undefined || parsed.error !== undefined) {
+                const parsed: unknown = JSON.parse(candidate);
+                if (
+                  typeof parsed === "object" &&
+                  parsed !== null &&
+                  ("frame_start" in parsed || "error" in parsed)
+                ) {
                   parsedData = parsed;
                   break;
                 }
@@ -375,7 +402,7 @@ export async function POST(request: NextRequest) {
         throw new Error(`No JSON found in Blender output. ${debugInfo}`);
       }
       
-      frameData = parsedData;
+      frameData = (isRecord(parsedData) ? (parsedData as BlendFrameData) : {}) as BlendFrameData;
     } catch (parseError) {
       // If parsing fails, provide more context
       const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
@@ -384,12 +411,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for errors in the parsed data (script outputs error JSON on failure)
-    if (frameData.error) {
-      throw new Error(`Blender script error: ${frameData.error} (error_type: ${frameData.error_type || 'unknown'})`);
+    if (typeof frameData.error === "string" && frameData.error.length > 0) {
+      throw new Error(
+        `Blender script error: ${frameData.error} (error_type: ${typeof frameData.error_type === "string" ? frameData.error_type : "unknown"})`
+      );
     }
 
     // Verify we have the expected frame data
-    if (frameData.frame_start === undefined || frameData.frame_end === undefined) {
+    if (typeof frameData.frame_start !== "number" || typeof frameData.frame_end !== "number") {
       throw new Error(`Invalid frame data received: ${JSON.stringify(frameData)}`);
     }
 
@@ -397,8 +426,8 @@ export async function POST(request: NextRequest) {
     const responseFrameData = {
       frameStart: frameData.frame_start,
       frameEnd: frameData.frame_end,
-      frameCount: frameData.frame_count,
-      fps: frameData.fps,
+      frameCount: typeof frameData.frame_count === "number" ? frameData.frame_count : undefined,
+      fps: typeof frameData.fps === "number" ? frameData.fps : undefined,
     };
 
     // Auto-trigger Inngest render function after successful frame detection
