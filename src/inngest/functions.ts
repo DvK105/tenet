@@ -44,35 +44,27 @@ export const renderFunction = inngest.createFunction(
       throw new Error("sandboxId is required in event data");
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let sandbox: any = null;
-
     try {
-      // Step 1: Connect to existing sandbox
-      const connectedSandbox = await step.run("connect-to-e2b-sandbox", async () => {
+      // Step 1: Verify the sandbox exists + has the Blender file.
+      // IMPORTANT: Never return the Sandbox object from a step (it's not serializable across invocations).
+      await step.run("verify-e2b-sandbox", async () => {
         const sbox = await Sandbox.connect(sandboxId, {
-          timeoutMs: 3600000, // 1 hour timeout
+          timeoutMs: 20_000,
         });
         console.log("Connected to existing E2B sandbox:", sbox.sandboxId);
-        
-        // Verify the Blender file exists in the sandbox
+
         const files = await sbox.files.list("/tmp");
         const blenderFile = files.find((f) => f.name === "uploaded.blend");
-        
+
         if (!blenderFile) {
           throw new Error("Blender file not found in sandbox");
         }
-        
+
         console.log("Blender file found in sandbox:", blenderFile.name);
-        return sbox;
       });
-      sandbox = connectedSandbox;
 
       // Step 2: Upload render_mp4.py script to sandbox
       await step.run("upload-render-script", async () => {
-        if (!sandbox) {
-          throw new Error("Sandbox not connected");
-        }
         const scriptPath = join(process.cwd(), "e2b-template", "render_mp4.py");
         let scriptContent: string;
         try {
@@ -82,17 +74,16 @@ export const renderFunction = inngest.createFunction(
         }
         
         const scriptSandboxPath = "/tmp/render_mp4.py";
-        await sandbox.files.write(scriptSandboxPath, scriptContent);
+        const sbox = await Sandbox.connect(sandboxId, {
+          timeoutMs: 20_000,
+        });
+        await sbox.files.write(scriptSandboxPath, scriptContent);
         console.log("Uploaded render_mp4.py script to sandbox");
         return scriptSandboxPath;
       });
 
       // Step 3: Start Blender render as a background process
       await step.run("start-blender-render", async () => {
-        if (!sandbox) {
-          throw new Error("Sandbox not connected");
-        }
-
         const scriptSandboxPath = "/tmp/render_mp4.py";
         const blendFilePath = "/tmp/uploaded.blend";
 
@@ -110,7 +101,10 @@ export const renderFunction = inngest.createFunction(
           ),
         ].join(" ");
 
-        await sandbox.commands.run(command, { timeoutMs: 60_000 });
+        const sbox = await Sandbox.connect(sandboxId, {
+          timeoutMs: 20_000,
+        });
+        await sbox.commands.run(command, { timeoutMs: 60_000 });
         console.log("Started Blender render in background");
       });
 
@@ -121,16 +115,16 @@ export const renderFunction = inngest.createFunction(
 
       for (let i = 0; i < maxPolls; i++) {
         const poll = await step.run(`poll-render-status-${i}`, async () => {
-          if (!sandbox) {
-            throw new Error("Sandbox not connected");
-          }
+          const sbox = await Sandbox.connect(sandboxId, {
+            timeoutMs: 20_000,
+          });
 
-          const files = await sandbox.files.list("/tmp");
+          const files = await sbox.files.list("/tmp");
           const hasMp4 = files.some((f: { name: string }) => f.name === "output.mp4");
 
           let progress: RenderProgress | null = null;
           try {
-            const raw = await sandbox.files.read("/tmp/render_progress.json");
+            const raw = await sbox.files.read("/tmp/render_progress.json");
             const text = decodeSandboxText(raw);
             progress = JSON.parse(text) as RenderProgress;
           } catch {
@@ -140,7 +134,7 @@ export const renderFunction = inngest.createFunction(
           if (progress?.status === "cancelled") {
             let stderrText = "";
             try {
-              const rawErr = await sandbox.files.read("/tmp/render_stderr.log");
+              const rawErr = await sbox.files.read("/tmp/render_stderr.log");
               stderrText = decodeSandboxText(rawErr).slice(0, 2000);
             } catch {
               // ignore
@@ -159,20 +153,24 @@ export const renderFunction = inngest.createFunction(
         completed = poll.done;
         if (completed) break;
 
-        await step.sleep(`wait-before-next-poll-${i}`, "30s");
+        // Yield control so each execution stays well under Vercel's 5-minute limit.
+        await step.sleep(`wait-before-next-poll-${i}`, "4m30s");
       }
 
       if (!completed) {
         throw new Error("Render did not complete within expected polling window");
       }
 
+      // Force a new serverless invocation before heavy work (download/write).
+      await step.sleep("yield-before-download", "1s");
+
       // Step 5: Read MP4 file from sandbox
       const videoData = await step.run("read-mp4-file", async () => {
-        if (!sandbox) {
-          throw new Error("Sandbox not connected");
-        }
         const outputPath = "/tmp/output.mp4";
-        const videoBytes = await sandbox.files.read(outputPath);
+        const sbox = await Sandbox.connect(sandboxId, {
+          timeoutMs: 60_000,
+        });
+        const videoBytes = await sbox.files.read(outputPath);
         // Handle different return types from E2B SDK
         let buffer: Buffer;
         if (videoBytes && typeof videoBytes === 'object') {
@@ -192,6 +190,8 @@ export const renderFunction = inngest.createFunction(
         console.log(`Read MP4 file: ${buffer.length} bytes`);
         return buffer;
       });
+
+      await step.sleep("yield-before-store", "1s");
 
       // Step 6: Store video file locally (temporary solution)
       // In production, upload to S3 or similar storage
@@ -234,13 +234,15 @@ export const renderFunction = inngest.createFunction(
         return `/renders/${fileName}`;
       });
 
+      await step.sleep("yield-before-cleanup", "1s");
+
       // Step 7: Clean up sandbox
       await step.run("cleanup-sandbox", async () => {
-        if (!sandbox) {
-          return;
-        }
         try {
-          await sandbox.kill();
+          const sbox = await Sandbox.connect(sandboxId, {
+            timeoutMs: 20_000,
+          });
+          await sbox.kill();
           console.log("Sandbox cleaned up");
         } catch (error) {
           console.error("Error cleaning up sandbox:", error);
@@ -255,13 +257,14 @@ export const renderFunction = inngest.createFunction(
         frameData: frameData || lastProgress,
       };
     } catch (error) {
-      // Clean up sandbox on error
-      if (sandbox) {
-        try {
-          await sandbox.kill();
-        } catch {
-          // Ignore cleanup errors
-        }
+      // Best-effort sandbox cleanup on error
+      try {
+        const sbox = await Sandbox.connect(sandboxId, {
+          timeoutMs: 20_000,
+        });
+        await sbox.kill();
+      } catch {
+        // Ignore cleanup errors
       }
       throw error;
     }
