@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { stat } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { Sandbox } from "e2b";
 import { getRenderObjectUrl, getSupabaseRendersBucket, hasSupabaseConfig, isSupabaseBucketPublic, tryGetSupabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
@@ -52,11 +51,11 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const sandboxId = searchParams.get("sandboxId");
+    const renderId = searchParams.get("renderId") ?? searchParams.get("sandboxId");
 
-    if (!sandboxId) {
+    if (!renderId) {
       return NextResponse.json(
-        { error: "sandboxId is required" },
+        { error: "renderId is required" },
         { status: 400 }
       );
     }
@@ -69,7 +68,7 @@ export async function GET(request: NextRequest) {
         const supabase = tryGetSupabaseAdmin();
         if (supabase) {
           const bucket = getSupabaseRendersBucket();
-          const objectPath = `${sandboxId}.mp4`;
+          const objectPath = `${renderId}.mp4`;
 
           const { data, error } = await withTimeout(
             supabase.storage.from(bucket).list("", {
@@ -99,7 +98,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if video file exists in public/renders directory
-    const videoPath = join(process.cwd(), "public", "renders", `${sandboxId}.mp4`);
+    const videoPath = join(process.cwd(), "public", "renders", `${renderId}.mp4`);
     const videoExists = existsSync(videoPath);
 
     if (videoExists) {
@@ -108,7 +107,7 @@ export async function GET(request: NextRequest) {
         const fileStats = await stat(videoPath);
         return NextResponse.json({
           status: "completed",
-          videoUrl: `/renders/${sandboxId}.mp4`,
+          videoUrl: `/renders/${renderId}.mp4`,
           fileSize: fileStats.size,
           progress: 100,
           etaSeconds: 0,
@@ -116,85 +115,15 @@ export async function GET(request: NextRequest) {
       } catch {
         return NextResponse.json({
           status: "completed",
-          videoUrl: `/renders/${sandboxId}.mp4`,
+          videoUrl: `/renders/${renderId}.mp4`,
           progress: 100,
           etaSeconds: 0,
         });
       }
     } else {
-      // Video not ready yet - attempt to read progress from the E2B sandbox.
-      try {
-        const elapsedMs = Date.now() - startedAtMs;
-        const remainingMs = Math.max(0, overallBudgetMs - elapsedMs);
-        if (remainingMs < 1_000) {
-          return NextResponse.json({
-            status: "rendering",
-          });
-        }
-
-        const sandbox = await withTimeout(
-          Sandbox.connect(sandboxId, {
-            timeoutMs: Math.min(5_000, remainingMs),
-          }),
-          Math.min(5_500, remainingMs)
-        );
-
-        let progressRaw: unknown;
-        try {
-          const elapsedAfterConnectMs = Date.now() - startedAtMs;
-          const remainingAfterConnectMs = Math.max(0, overallBudgetMs - elapsedAfterConnectMs);
-          if (remainingAfterConnectMs < 500) {
-            return NextResponse.json({
-              status: "rendering",
-            });
-          }
-
-          progressRaw = await withTimeout(
-            sandbox.files.read("/tmp/render_progress.json"),
-            Math.min(2_000, remainingAfterConnectMs)
-          );
-        } catch {
-          return NextResponse.json({
-            status: "rendering",
-          });
-        }
-
-        const progressText = decodeSandboxText(progressRaw);
-
-        const parsed = JSON.parse(progressText) as SandboxProgress;
-        const frameCount = safeNumber(parsed.frameCount);
-        const framesDone = safeNumber(parsed.framesDone);
-        const startedAt = safeNumber(parsed.startedAt);
-        const updatedAt = safeNumber(parsed.updatedAt);
-
-        const progress =
-          frameCount && framesDone !== undefined
-            ? clamp((framesDone / frameCount) * 100, 0, 100)
-            : undefined;
-
-        let etaSeconds: number | undefined;
-        if (frameCount && framesDone !== undefined && framesDone > 0 && startedAt && updatedAt && updatedAt > startedAt) {
-          const elapsedSeconds = updatedAt - startedAt;
-          const secondsPerFrame = elapsedSeconds / framesDone;
-          const remainingFrames = Math.max(0, frameCount - framesDone);
-          etaSeconds = clamp(secondsPerFrame * remainingFrames, 0, 36000);
-        }
-
-        const apiStatus: "rendering" | "completed" | "error" =
-          parsed.status === "completed" ? "completed" : parsed.status === "cancelled" ? "error" : "rendering";
-
-        return NextResponse.json({
-          status: apiStatus,
-          progress: apiStatus === "completed" ? 100 : progress,
-          etaSeconds: apiStatus === "completed" ? 0 : etaSeconds,
-          frameCount,
-          framesDone,
-        });
-      } catch {
-        return NextResponse.json({
-          status: "rendering",
-        });
-      }
+      return NextResponse.json({
+        status: "rendering",
+      });
     }
   } catch (error) {
     console.error("Error checking render status:", error);

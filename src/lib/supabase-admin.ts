@@ -41,6 +41,14 @@ export function getSupabaseRendersBucket(): string {
   return process.env.SUPABASE_STORAGE_BUCKET || "renders";
 }
 
+export function getSupabaseInputsBucket(): string {
+  return process.env.SUPABASE_INPUTS_BUCKET || "blends";
+}
+
+export function isSupabaseInputsBucketPublic(): boolean {
+  return process.env.SUPABASE_INPUTS_PUBLIC === "1";
+}
+
 export function isSupabaseBucketPublic(): boolean {
   return process.env.SUPABASE_STORAGE_PUBLIC === "1";
 }
@@ -50,6 +58,26 @@ export async function getRenderObjectUrl(objectPath: string): Promise<string> {
   const bucket = getSupabaseRendersBucket();
 
   if (isSupabaseBucketPublic()) {
+    const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
+    return data.publicUrl;
+  }
+
+  const { data, error } = await supabase.storage
+    .from(bucket)
+    .createSignedUrl(objectPath, 60 * 60);
+
+  if (error || !data?.signedUrl) {
+    throw new Error(error?.message || "Failed to create signed URL");
+  }
+
+  return data.signedUrl;
+}
+
+export async function getInputObjectUrl(objectPath: string): Promise<string> {
+  const supabase = getSupabaseAdmin();
+  const bucket = getSupabaseInputsBucket();
+
+  if (isSupabaseInputsBucketPublic()) {
     const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
     return data.publicUrl;
   }

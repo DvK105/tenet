@@ -7,6 +7,7 @@ import { UploadZone } from "@/components/dashboard/upload-zone"
 import { RenderQueue } from "@/components/dashboard/render-queue"
 import { PerformanceGraph } from "@/components/dashboard/performance-graph"
 import { SystemStatus } from "@/components/dashboard/system-status"
+import { getSupabaseBrowserClient, getSupabaseInputsBucket } from "@/lib/supabase-browser"
 
 type RenderStatusResponse = {
   status?: "rendering" | "completed" | "error"
@@ -148,10 +149,10 @@ export function RenderDashboard() {
   const handleUpload = async (newFiles: File[]) => {
     await Promise.all(
       newFiles.map(async (file) => {
-        const tempId = `LOCAL-${crypto.randomUUID()}`
+        const renderId = crypto.randomUUID()
         setJobs((prev) => [
           {
-            id: tempId,
+            id: renderId,
             fileName: file.name,
             createdAt: Date.now(),
             status: "uploading",
@@ -161,35 +162,54 @@ export function RenderDashboard() {
         ])
 
         try {
-          const form = new FormData()
-          form.append("file", file)
+          const supabase = getSupabaseBrowserClient()
+          const bucket = getSupabaseInputsBucket()
+          const inputObjectPath = `${renderId}.blend`
 
-          const res = await fetch("/api/upload-blender", {
+          const { error: uploadError } = await supabase.storage
+            .from(bucket)
+            .upload(inputObjectPath, file, {
+              upsert: true,
+              contentType: "application/octet-stream",
+            })
+
+          if (uploadError) {
+            setJobs((prev) =>
+              prev.map((j) => (j.id === renderId ? { ...j, status: "error" } : j))
+            )
+            return
+          }
+
+          const res = await fetch("/api/trigger-render", {
             method: "POST",
-            body: form,
+            headers: {
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              renderId,
+              inputObjectPath,
+            }),
           })
 
-          const data = (await res.json()) as { sandboxId?: string; success?: boolean; error?: string }
-          if (!res.ok || !data?.sandboxId) {
+          if (!res.ok) {
             setJobs((prev) =>
-              prev.map((j) => (j.id === tempId ? { ...j, status: "error" } : j))
+              prev.map((j) => (j.id === renderId ? { ...j, status: "error" } : j))
             )
             return
           }
 
           setJobs((prev) =>
             prev.map((j) =>
-              j.id === tempId
+              j.id === renderId
                 ? {
                     ...j,
-                    id: data.sandboxId as string,
                     status: "rendering",
                   }
                 : j
             )
           )
         } catch {
-          setJobs((prev) => prev.map((j) => (j.id === tempId ? { ...j, status: "error" } : j)))
+          setJobs((prev) => prev.map((j) => (j.id === renderId ? { ...j, status: "error" } : j)))
         }
       })
     )

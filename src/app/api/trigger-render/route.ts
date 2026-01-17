@@ -7,11 +7,18 @@ export const maxDuration = 60;
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { sandboxId } = body;
+    const { renderId, inputObjectPath, parallelChunks, frameData } = body;
 
-    if (!sandboxId) {
+    if (!renderId) {
       return NextResponse.json(
-        { error: "sandboxId is required" },
+        { error: "renderId is required" },
+        { status: 400 }
+      );
+    }
+
+    if (!inputObjectPath) {
+      return NextResponse.json(
+        { error: "inputObjectPath is required" },
         { status: 400 }
       );
     }
@@ -19,11 +26,14 @@ export async function POST(request: Request) {
     await inngest.send({
       name: "render/invoked",
       data: {
-        sandboxId,
+        renderId,
+        inputObjectPath,
+        parallelChunks,
+        frameData,
       },
     });
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, renderId });
   } catch (error) {
     console.error("Error triggering Inngest function:", error);
     return NextResponse.json(

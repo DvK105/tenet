@@ -4,7 +4,7 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { writeFile } from "fs/promises";
 import { mkdir } from "fs/promises";
-import { getRenderObjectUrl, getSupabaseRendersBucket, hasSupabaseConfig, tryGetSupabaseAdmin } from "@/lib/supabase-admin";
+import { getInputObjectUrl, getRenderObjectUrl, getSupabaseRendersBucket, hasSupabaseConfig, tryGetSupabaseAdmin } from "@/lib/supabase-admin";
 
 // Simple in-memory cache for rendered videos (key: sandboxId, value: file path)
 // In production, you'd want to use proper storage (S3, etc.)
@@ -66,7 +66,8 @@ export const renderFunction = inngest.createFunction(
   { id: "render-function" },
   { event: "render/invoked" },
   async ({ event, step }) => {
-    const sandboxId = event.data.sandboxId as string | undefined;
+    const renderId = event.data.renderId as string | undefined;
+    const inputObjectPath = event.data.inputObjectPath as string | undefined;
     const frameData = event.data.frameData as FrameData | undefined;
     const parallelChunks = event.data.parallelChunks as number | undefined;
     const parallelChunksSafe =
@@ -74,8 +75,12 @@ export const renderFunction = inngest.createFunction(
         ? Math.floor(parallelChunks)
         : undefined;
 
-    if (!sandboxId) {
-      throw new Error("sandboxId is required in event data");
+    if (!renderId) {
+      throw new Error("renderId is required in event data");
+    }
+
+    if (!inputObjectPath) {
+      throw new Error("inputObjectPath is required in event data");
     }
 
     const needsFrameDetection = !(
@@ -84,24 +89,39 @@ export const renderFunction = inngest.createFunction(
       typeof frameData.frameEnd === "number"
     );
 
+    let createdSandboxId: string | null = null;
+
     try {
-      // Step 1: Verify the sandbox exists + has the Blender file.
+      // Step 1: Create a sandbox and pull the input .blend from Supabase.
       // IMPORTANT: Never return the Sandbox object from a step (it's not serializable across invocations).
-      await step.run("verify-e2b-sandbox", async () => {
-        const sbox = await Sandbox.connect(sandboxId, {
-          timeoutMs: 20_000,
-        });
-        console.log("Connected to existing E2B sandbox:", sbox.sandboxId);
-
-        const files = await sbox.files.list("/tmp");
-        const blenderFile = files.find((f) => f.name === "uploaded.blend");
-
-        if (!blenderFile) {
-          throw new Error("Blender file not found in sandbox");
+      const sandboxId = await step.run("create-sandbox-and-download-input", async () => {
+        if (!hasSupabaseConfig()) {
+          throw new Error("Supabase config missing (required to download inputObjectPath)");
         }
 
-        console.log("Blender file found in sandbox:", blenderFile.name);
+        const inputUrl = await getInputObjectUrl(inputObjectPath);
+        const sbox = await Sandbox.create("blender-headless-template", {
+          timeoutMs: 3600000,
+        });
+
+        const command = [
+          "bash -lc",
+          JSON.stringify(
+            [
+              "set -euo pipefail",
+              "rm -f /tmp/uploaded.blend",
+              `wget -O /tmp/uploaded.blend ${JSON.stringify(inputUrl)}`,
+              "ls -lh /tmp/uploaded.blend",
+            ].join("; ")
+          ),
+        ].join(" ");
+
+        await sbox.commands.run(command, { timeoutMs: 0 });
+        console.log("Created sandbox and downloaded input:", sbox.sandboxId);
+        return sbox.sandboxId;
       });
+
+      createdSandboxId = sandboxId;
 
       // Step 2: Upload render_mp4.py script to sandbox
       await step.run("upload-render-script", async () => {
@@ -537,7 +557,7 @@ export const renderFunction = inngest.createFunction(
           const supabase = tryGetSupabaseAdmin();
           if (!supabase) throw new Error("Supabase config missing");
           const bucket = getSupabaseRendersBucket();
-          const objectPath = `${sandboxId}.mp4`;
+          const objectPath = `${renderId}.mp4`;
 
           const { error } = await supabase.storage
             .from(bucket)
@@ -551,7 +571,7 @@ export const renderFunction = inngest.createFunction(
           }
 
           const url = await getRenderObjectUrl(objectPath);
-          videoCache.set(sandboxId, url);
+          videoCache.set(renderId, url);
           return url;
         }
 
@@ -559,10 +579,10 @@ export const renderFunction = inngest.createFunction(
         const publicDir = join(process.cwd(), "public", "renders");
         try {
           await mkdir(publicDir, { recursive: true });
-          const fileName = `${sandboxId}.mp4`;
+          const fileName = `${renderId}.mp4`;
           const filePath = join(publicDir, fileName);
           await writeFile(filePath, bufferToWrite);
-          videoCache.set(sandboxId, `/renders/${fileName}`);
+          videoCache.set(renderId, `/renders/${fileName}`);
           console.log(`Stored video file: ${filePath}`);
           return `/renders/${fileName}`;
         } catch (e) {
@@ -590,15 +610,18 @@ export const renderFunction = inngest.createFunction(
         success: true,
         videoUrl: videoPath,
         sandboxId,
+        renderId,
         frameData: frameData || lastProgress,
       };
     } catch (error) {
       // Best-effort sandbox cleanup on error
       try {
-        const sbox = await Sandbox.connect(sandboxId, {
-          timeoutMs: 20_000,
-        });
-        await sbox.kill();
+        if (createdSandboxId) {
+          const sbox = await Sandbox.connect(createdSandboxId, {
+            timeoutMs: 20_000,
+          });
+          await sbox.kill();
+        }
       } catch {
         // Ignore cleanup errors
       }
