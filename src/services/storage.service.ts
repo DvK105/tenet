@@ -46,7 +46,7 @@ export class StorageService {
     // Try Supabase first if configured
     if (this.supabaseClient && appConfig.features.enableSupabaseStorage()) {
       try {
-        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket : appConfig.storage.inputsBucket;
+        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket || "renders" : appConfig.storage.inputsBucket || "blends";
         const buffer = this.toBuffer(data);
 
         const { error } = await this.supabaseClient.storage.from(bucketName).upload(filePath, buffer, {
@@ -90,7 +90,7 @@ export class StorageService {
     // Try Supabase first
     if (this.supabaseClient && appConfig.features.enableSupabaseStorage()) {
       try {
-        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket : appConfig.storage.inputsBucket;
+        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket || "renders" : appConfig.storage.inputsBucket || "blends";
         const { data, error } = await this.supabaseClient.storage.from(bucketName).list("", {
           limit: 1,
           search: filePath,
@@ -123,7 +123,7 @@ export class StorageService {
     // Try Supabase first
     if (this.supabaseClient && appConfig.features.enableSupabaseStorage()) {
       try {
-        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket : appConfig.storage.inputsBucket;
+        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket || "renders" : appConfig.storage.inputsBucket || "blends";
         const isPublic = bucket === "renders" ? appConfig.storage.isRendersBucketPublic : appConfig.storage.isInputsBucketPublic;
 
         if (isPublic) {
@@ -161,7 +161,7 @@ export class StorageService {
     // Try Supabase first
     if (this.supabaseClient && appConfig.features.enableSupabaseStorage()) {
       try {
-        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket : appConfig.storage.inputsBucket;
+        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket || "renders" : appConfig.storage.inputsBucket || "blends";
         const { data, error } = await this.supabaseClient.storage.from(bucketName).list("", {
           limit: 1,
           search: filePath,
@@ -200,7 +200,7 @@ export class StorageService {
     // Try Supabase first
     if (this.supabaseClient && appConfig.features.enableSupabaseStorage()) {
       try {
-        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket : appConfig.storage.inputsBucket;
+        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket || "renders" : appConfig.storage.inputsBucket || "blends";
         const { error } = await this.supabaseClient.storage.from(bucketName).remove([filePath]);
         if (error) {
           throw new StorageError(`Failed to delete from Supabase: ${error.message}`, "supabase", { filePath, bucket: bucketName });
@@ -223,7 +223,7 @@ export class StorageService {
     // Try Supabase first
     if (this.supabaseClient && appConfig.features.enableSupabaseStorage()) {
       try {
-        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket : appConfig.storage.inputsBucket;
+        const bucketName = bucket === "renders" ? appConfig.storage.rendersBucket || "renders" : appConfig.storage.inputsBucket || "blends";
         const { data, error } = await this.supabaseClient.storage.from(bucketName).list(prefix);
 
         if (error || !Array.isArray(data)) {
