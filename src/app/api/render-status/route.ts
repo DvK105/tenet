@@ -36,6 +36,19 @@ function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
@@ -48,6 +61,9 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const startedAtMs = Date.now();
+    const overallBudgetMs = 8_000;
+
     if (hasSupabaseConfig()) {
       try {
         const supabase = tryGetSupabaseAdmin();
@@ -55,10 +71,13 @@ export async function GET(request: NextRequest) {
           const bucket = getSupabaseRendersBucket();
           const objectPath = `${sandboxId}.mp4`;
 
-          const { data, error } = await supabase.storage.from(bucket).list("", {
-            limit: 1,
-            search: objectPath,
-          });
+          const { data, error } = await withTimeout(
+            supabase.storage.from(bucket).list("", {
+              limit: 1,
+              search: objectPath,
+            }),
+            4_000
+          );
 
           if (!error && Array.isArray(data) && data.some((o) => o.name === objectPath)) {
             const url = await getRenderObjectUrl(objectPath);
@@ -105,13 +124,35 @@ export async function GET(request: NextRequest) {
     } else {
       // Video not ready yet - attempt to read progress from the E2B sandbox.
       try {
-        const sandbox = await Sandbox.connect(sandboxId, {
-          timeoutMs: 20_000,
-        });
+        const elapsedMs = Date.now() - startedAtMs;
+        const remainingMs = Math.max(0, overallBudgetMs - elapsedMs);
+        if (remainingMs < 1_000) {
+          return NextResponse.json({
+            status: "rendering",
+          });
+        }
+
+        const sandbox = await withTimeout(
+          Sandbox.connect(sandboxId, {
+            timeoutMs: Math.min(5_000, remainingMs),
+          }),
+          Math.min(5_500, remainingMs)
+        );
 
         let progressRaw: unknown;
         try {
-          progressRaw = await sandbox.files.read("/tmp/render_progress.json");
+          const elapsedAfterConnectMs = Date.now() - startedAtMs;
+          const remainingAfterConnectMs = Math.max(0, overallBudgetMs - elapsedAfterConnectMs);
+          if (remainingAfterConnectMs < 500) {
+            return NextResponse.json({
+              status: "rendering",
+            });
+          }
+
+          progressRaw = await withTimeout(
+            sandbox.files.read("/tmp/render_progress.json"),
+            Math.min(2_000, remainingAfterConnectMs)
+          );
         } catch {
           return NextResponse.json({
             status: "rendering",
