@@ -199,7 +199,7 @@ export class BlenderService {
   private buildBlenderCommand(
     scriptPath: string,
     blendFilePath: string,
-    options: BlenderCommandOptions & { timeoutSeconds: number } = {}
+    options: BlenderCommandOptions & { timeoutSeconds: number } = { timeoutSeconds: blenderConfig.timeouts.frameExtraction }
   ): string {
     const {
       timeoutSeconds,
@@ -242,7 +242,7 @@ export class BlenderService {
   buildRenderCommand(
     scriptPath: string = blenderConfig.sandbox.renderMp4ScriptPath,
     blendFilePath: string = blenderConfig.sandbox.uploadedBlendPath,
-    options: BlenderCommandOptions & { timeoutSeconds: number } = {}
+    options: BlenderCommandOptions & { timeoutSeconds: number } = { timeoutSeconds: blenderConfig.timeouts.render }
   ): string {
     return this.buildBlenderCommand(scriptPath, blendFilePath, options);
   }
