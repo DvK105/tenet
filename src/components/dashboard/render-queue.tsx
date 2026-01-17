@@ -3,18 +3,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import type { RenderJob } from "@/types"
 
 interface RenderQueueProps {
-  jobs: Array<{
-    id: string
-    fileName: string
-    createdAt: number
-    status: "uploading" | "rendering" | "completed" | "error"
-    progress?: number
-    etaSeconds?: number
-    videoUrl?: string
-    errorMessage?: string
-  }>
+  jobs: RenderJob[]
   onRefresh?: () => void | Promise<void>
   onClear?: () => void
 }

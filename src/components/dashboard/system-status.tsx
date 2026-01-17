@@ -2,7 +2,8 @@
 
 import { useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { calculateSystemStatus, type RenderJob } from "@/lib/metrics"
+import { calculateSystemStatus } from "@/lib/metrics"
+import type { RenderJob } from "@/types"
 
 interface SystemStatusProps {
   jobs: RenderJob[]

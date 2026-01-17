@@ -3,7 +3,8 @@
 import { useMemo, useEffect, useState } from "react"
 import { CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { aggregateJobsByTime, type RenderJob, type TimeBucket } from "@/lib/metrics"
+import { aggregateJobsByTime, type TimeBucket } from "@/lib/metrics"
+import type { RenderJob } from "@/types"
 
 interface PerformanceGraphProps {
   jobs: RenderJob[]

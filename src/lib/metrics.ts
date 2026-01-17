@@ -1,15 +1,4 @@
-export type RenderJob = {
-  id: string
-  fileName: string
-  createdAt: number
-  completedAt?: number
-  status: "uploading" | "rendering" | "completed" | "error"
-  progress?: number
-  etaSeconds?: number
-  videoUrl?: string
-  errorMessage?: string
-  fileSize?: number
-}
+import type { RenderJob } from "@/types"
 
 export type TimeBucket = {
   time: string
