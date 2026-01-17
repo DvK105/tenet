@@ -12,14 +12,21 @@ let cached:
   | ReturnType<typeof createClient>
   | null = null;
 
-export function getSupabaseBrowserClient() {
+export function getSupabaseBrowserClient(): ReturnType<typeof createClient> | null {
   if (cached) return cached;
 
-  const url = requirePublicEnv("NEXT_PUBLIC_SUPABASE_URL");
-  const anonKey = requirePublicEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  try {
+    const url = requirePublicEnv("NEXT_PUBLIC_SUPABASE_URL");
+    const anonKey = requirePublicEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
-  cached = createClient(url, anonKey);
-  return cached;
+    cached = createClient(url, anonKey);
+    return cached;
+  } catch (error) {
+    // Return null instead of throwing to prevent toast notifications
+    // The calling code should handle this gracefully
+    console.warn("Supabase client not configured:", error instanceof Error ? error.message : String(error));
+    return null;
+  }
 }
 
 export function getSupabaseInputsBucket(): string {

@@ -279,6 +279,13 @@ export function RenderDashboard() {
 
         try {
           const supabase = getSupabaseBrowserClient()
+          if (!supabase) {
+            // Supabase not configured, skip upload and continue without toast
+            setJobs((prev) =>
+              prev.map((j) => (j.id === renderId ? { ...j, status: "error", errorMessage: "Supabase not configured" } : j))
+            )
+            return
+          }
           const bucket = getSupabaseInputsBucket()
           const inputObjectPath = `${renderId}.blend`
 
@@ -344,7 +351,10 @@ export function RenderDashboard() {
           )
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e)
-          toast.error(msg)
+          // Suppress toasts for Supabase URL configuration errors
+          if (!msg.includes("NEXT_PUBLIC_SUPABASE_URL") && !msg.includes("NEXT_PUBLIC_SUPABASE_ANON_KEY")) {
+            toast.error(msg)
+          }
           setJobs((prev) =>
             prev.map((j) => (j.id === renderId ? { ...j, status: "error", errorMessage: msg } : j))
           )
