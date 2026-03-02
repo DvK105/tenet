@@ -41,7 +41,9 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
     return signed["signed_url"]
 
 
-@app.function(image=blender_image, timeout=600)
+@app.function(image=blender_image, 
+              timeout=600, 
+              gpu=modal.gpu.A100())
 def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
     """
     Download a .blend file from a signed URL, render frame 1 with Blender using the
