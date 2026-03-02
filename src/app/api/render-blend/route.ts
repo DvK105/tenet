@@ -38,9 +38,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const outputKey = `renders/${randomUUID()}.png`;
+    const outputKey = `renders/${randomUUID()}.mp4`;
 
-    const modalResponse = await fetch(modalRenderEndpoint, {
+    const modalResponse = await fetch(modalRenderEndpoint!, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
