@@ -1,4 +1,69 @@
+"use client";
+
+import { useState } from "react";
+
 export default function Home() {
+  const [file, setFile] = useState<File | null>(null);
+  const [status, setStatus] = useState<"idle" | "uploading" | "rendering" | "done" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    setVideoUrl(null);
+
+    if (!file) {
+      setError("Please select a .blend file first.");
+      return;
+    }
+
+    try {
+      // 1) Upload the .blend file
+      setStatus("uploading");
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const uploadRes = await fetch("/api/upload-blend", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!uploadRes.ok) {
+        const body = await uploadRes.json().catch(() => ({}));
+        throw new Error(body.error ?? "Upload failed");
+      }
+
+      const uploadData: { key: string; blendUrl: string } = await uploadRes.json();
+
+      // 2) Trigger render in Modal via our API
+      setStatus("rendering");
+      const renderRes = await fetch("/api/render-blend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: uploadData.key }),
+      });
+
+      if (!renderRes.ok) {
+        const body = await renderRes.json().catch(() => ({}));
+        throw new Error(body.error ?? "Render failed");
+      }
+
+      const renderData: { imageUrl?: string } = await renderRes.json();
+      if (!renderData.imageUrl) {
+        throw new Error("Render did not return a video URL");
+      }
+
+      setVideoUrl(renderData.imageUrl);
+      setStatus("done");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong during upload/render.";
+      setError(message);
+      setStatus("error");
+    }
+  }
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
       <div className="w-full max-w-xl space-y-6 rounded-xl border border-border bg-card p-6 shadow-md">
@@ -11,29 +76,47 @@ export default function Home() {
         </div>
         <form
           className="space-y-4"
-          action="/api/upload-blend"
-          method="post"
+          onSubmit={handleSubmit}
           encType="multipart/form-data"
         >
           <input
             type="file"
-            name="file"
             accept=".blend"
             className="block w-full text-sm text-muted-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+            onChange={(event) => {
+              const selected = event.target.files?.[0] ?? null;
+              setFile(selected);
+              setVideoUrl(null);
+              setError(null);
+              setStatus("idle");
+            }}
           />
           <button
             type="submit"
             className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            Upload (manual render trigger via API)
+            {status === "uploading"
+              ? "Uploading..."
+              : status === "rendering"
+                ? "Rendering..."
+                : "Upload & render"}
           </button>
         </form>
-        <p className="text-xs text-muted-foreground">
-          Note: for a smoother UX, you can replace this simple HTML form with a
-          client component that calls <code>/api/upload-blend</code> and{" "}
-          <code>/api/render-blend</code> via <code>fetch</code>, then displays
-          the returned image URL.
-        </p>
+        {error && (
+          <p className="text-sm text-red-500">
+            {error}
+          </p>
+        )}
+        {videoUrl && (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">Rendered video:</p>
+            <video
+              className="w-full rounded-lg border border-border"
+              controls
+              src={videoUrl}
+            />
+          </div>
+        )}
       </div>
     </main>
   );
