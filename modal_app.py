@@ -21,7 +21,11 @@ blender_image = (
         "libgl1-mesa-glx", "libgl1-mesa-dri", "libxi6", "libxext6",
         "libxrender1", "libxrandr2", "libasound2", "libpulse0",
         "libfontconfig1", "libfreetype6", "libxcomposite1",
-        "libxcursor1", "libxinerama1", "libgtk-3-0", "libglib2.0-0"
+        "libxcursor1", "libxinerama1", "libgtk-3-0", "libglib2.0-0",
+        # Additional X11 libraries
+        "libsm6", "libice6", "libx11-6", "libx11-xcb1", "libxcb1",
+        "libxau6", "libxdmcp6", "libxss1", "libxtst6", "libnss3",
+        "libxfixes3", "libxdamage1", "libxxf86vm1", "libxv1"
     )
     .run_commands(
         "set -eux; "
