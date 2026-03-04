@@ -63,15 +63,35 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
             f.write(resp.content)
 
         # Run Blender in headless mode, rendering frame 1.
-        subprocess.run(
-            ["blender", "-b", blend_path, "-a"],
-            check=True,
-        )
+        output_base = os.path.join(tmpdir, "render")
+        try:
+            subprocess.run(
+                [
+                    "blender",
+                    "-b",
+                    blend_path,
+                    "-o",
+                    output_base,
+                    "-F",
+                    "FFmpeg",
+                    "-x",
+                    "1",
+                    "-a",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            output = e.stdout or ""
+            raise RuntimeError(
+                "Blender render failed. Blender output:\n" + output[-12000:]
+            ) from e
 
-        # Blender's default output for frame 1 is usually 0001.png in the CWD.
-        output_path = os.path.join(tmpdir, "render.mp4")
+        output_path = output_base + ".mp4"
         if not os.path.exists(output_path):
-            raise FileNotFoundError("Expected Blender output render.mp4 was not found.")
+            raise FileNotFoundError(f"Expected Blender output {output_path} was not found.")
 
         return _upload_render_to_supabase(output_path, output_key)
 

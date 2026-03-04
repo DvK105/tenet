@@ -22,8 +22,6 @@ export async function POST(req: NextRequest) {
 
     const blendsBucket =
       process.env.SUPABASE_BLENDS_BUCKET ?? "blends";
-    const rendersBucket =
-      process.env.SUPABASE_RENDERS_BUCKET ?? "renders";
 
     const { data: signed, error: signedError } =
       await supabaseServerClient.storage
@@ -40,23 +38,23 @@ export async function POST(req: NextRequest) {
 
     const outputKey = `renders/${randomUUID()}.mp4`;
 
-    const modalResponse = await fetch(modalRenderEndpoint!, {
+    const modalUrl = new URL(modalRenderEndpoint!);
+    modalUrl.searchParams.set("blend_url", signed.signedUrl);
+    modalUrl.searchParams.set("output_key", outputKey);
+
+    const modalResponse = await fetch(modalUrl.toString(), {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        blend_url: signed.signedUrl,
-        output_key: outputKey,
-        renders_bucket: rendersBucket,
-      }),
     });
 
     if (!modalResponse.ok) {
       const text = await modalResponse.text();
       console.error("Modal render error:", modalResponse.status, text);
       return NextResponse.json(
-        { error: "Modal render failed" },
+        {
+          error: "Modal render failed",
+          modalStatus: modalResponse.status,
+          modalBody: text,
+        },
         { status: 502 },
       );
     }
