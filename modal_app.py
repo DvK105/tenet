@@ -69,10 +69,29 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
     with tempfile.TemporaryDirectory() as tmpdir:
         os.chdir(tmpdir)
 
+        try:
+            v = subprocess.run(
+                [BLENDER_BIN, "--version"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            ).stdout
+            print("Using Blender binary:", BLENDER_BIN)
+            print("Blender --version:\n" + (v or "").strip())
+        except Exception as e:
+            raise RuntimeError(f"Failed to run Blender at {BLENDER_BIN}: {e}") from e
+
         resp = requests.get(blend_url)
         resp.raise_for_status()
 
         data = resp.content
+        print(
+            "Downloaded blend_url bytes:",
+            len(data),
+            "content-type:",
+            resp.headers.get("content-type"),
+        )
         if len(data) < 12 or not data.startswith(b"BLENDER"):
             snippet = data[:200]
             raise RuntimeError(
