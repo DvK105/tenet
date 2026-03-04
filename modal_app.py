@@ -7,9 +7,23 @@ import modal
 import requests
 
 
+BLENDER_VERSION = os.environ.get("BLENDER_VERSION", "5.0.1")
+BLENDER_DIR = f"/opt/blender-{BLENDER_VERSION}"
+BLENDER_BIN = f"{BLENDER_DIR}/blender"
+
 blender_image = (
     modal.Image.debian_slim()
-    .apt_install("blender")
+    .apt_install("ca-certificates", "curl", "tar", "xz-utils")
+    .run_commands(
+        "set -eux; "
+        "mkdir -p /opt; "
+        f"cd /opt; "
+        f"curl -fL -o blender.tar.xz https://download.blender.org/release/Blender{BLENDER_VERSION.rsplit('.', 1)[0]}/blender-{BLENDER_VERSION}-linux-x64.tar.xz; "
+        f"tar -xJf blender.tar.xz; "
+        f"rm blender.tar.xz; "
+        f"mv blender-{BLENDER_VERSION}-linux-x64 {BLENDER_DIR}; "
+        f"ln -sf {BLENDER_BIN} /usr/local/bin/blender"
+    )
     .pip_install("supabase", "requests","fastapi[standard]")
 )
 
@@ -58,16 +72,26 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
         resp = requests.get(blend_url)
         resp.raise_for_status()
 
+        data = resp.content
+        if len(data) < 12 or not data.startswith(b"BLENDER"):
+            snippet = data[:200]
+            raise RuntimeError(
+                "Downloaded content is not a .blend file. "
+                f"content_type={resp.headers.get('content-type')} "
+                f"length={len(data)} "
+                f"first_bytes={snippet!r}"
+            )
+
         blend_path = os.path.join(tmpdir, "scene.blend")
         with open(blend_path, "wb") as f:
-            f.write(resp.content)
+            f.write(data)
 
         # Run Blender in headless mode, rendering frame 1.
         output_base = os.path.join(tmpdir, "render")
         try:
             subprocess.run(
                 [
-                    "blender",
+                    BLENDER_BIN,
                     "-b",
                     blend_path,
                     "-o",
