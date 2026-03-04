@@ -84,12 +84,10 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
 @app.function(
     image=blender_image,
     timeout=600,
-    gpu=modal.gpu.A100(),
-    concurrency_limit=MAX_CONCURRENT_RENDERS,
-    container_idle_timeout=300,  # 5 minutes idle timeout for cost savings
-    retries=3,
-    # Use spot instances for cost optimization
-    _allow_background_volume_communication=True
+    gpu="A100-40GB",
+    max_containers=MAX_CONCURRENT_RENDERS,
+    scaledown_window=300,  # 5 minutes idle timeout for cost savings
+    retries=3
 )
 def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
     """
@@ -219,9 +217,9 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
 @app.function(
     image=blender_image,
     timeout=1800,  # 30 minutes for batch
-    gpu=modal.gpu.A100(),
-    concurrency_limit=MAX_CONCURRENT_RENDERS,
-    container_idle_timeout=300,
+    gpu="A100-40GB",
+    max_containers=MAX_CONCURRENT_RENDERS,
+    scaledown_window=300,
     retries=3
 )
 def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] = None) -> list[str]:
