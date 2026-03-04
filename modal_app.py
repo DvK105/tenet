@@ -41,9 +41,6 @@ blender_image = (
 
 app = modal.App("blend-renderer")
 
-# Render queue for managing parallel jobs
-render_queue = modal.Dict.new()
-
 # Configuration for parallel processing
 MAX_CONCURRENT_RENDERS = int(os.environ.get("MAX_CONCURRENT_RENDERS", "10"))
 GPU_MEMORY = os.environ.get("GPU_MEMORY", "40GB")  # A100 has 40GB
