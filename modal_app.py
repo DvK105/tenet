@@ -117,7 +117,7 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
                 env = os.environ.copy()
                 env['DISPLAY'] = ':99'
                 env['PYTHONDONTWRITEBYTECODE'] = '1'
-                
+
                 v = subprocess.run(
                     [BLENDER_BIN, "--version"],
                     check=True,
@@ -146,6 +146,7 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
         max_download_retries = 3
         for attempt in range(max_download_retries):
             try:
+                print(f"[{job_id}] Downloading from URL: {blend_url}")
                 resp = requests.get(blend_url, timeout=60)
                 resp.raise_for_status()
                 break
@@ -158,9 +159,16 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
         data = resp.content
         print(
             f"[{job_id}] Downloaded blend_url bytes: {len(data)}, "
-            f"content-type: {resp.headers.get('content-type')}"
+            f"content-type: {resp.headers.get('content-type')}, "
+            f"first_bytes_hex: {data[:20].hex()}"
         )
-        
+
+        # Check if this looks like a compressed file that was renamed
+        if data.startswith(b'PK'):
+            print(f"[{job_id}] ERROR: This appears to be a ZIP file, not a .blend file!")
+        elif data.startswith(b'\x1f\x8b'):
+            print(f"[{job_id}] ERROR: This appears to be a GZIP file, not a .blend file!")
+
         if len(data) < 12 or not data.startswith(b"BLENDER"):
             snippet = data[:200]
             raise RuntimeError(
@@ -179,13 +187,13 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
         try:
             print(f"[{job_id}] Starting Blender render...")
             render_start = time.time()
-            
+
             # Set display environment for headless operation
             env = os.environ.copy()
             env['DISPLAY'] = ':99'
             env['PYTHONDONTWRITEBYTECODE'] = '1'
             env['HOME'] = '/tmp'  # Ensure Blender has a home directory
-            
+
             # First check if blend file is valid
             print(f"[{job_id}] Validating blend file...")
             validate_result = subprocess.run(
@@ -201,7 +209,7 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
                 timeout=30,
                 env=env
             )
-            
+
             print(f"[{job_id}] Starting actual render...")
             result = subprocess.run(
                 [
@@ -222,11 +230,11 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
                 timeout=1200,  # Increased to 20 minutes
                 env=env
             )
-            
+
             render_time = time.time() - render_start
             print(f"[{job_id}] Blender render completed in {render_time:.1f}s")
             print(f"[{job_id}] Blender output:\n{result.stdout[-1000:]}")
-            
+
         except subprocess.CalledProcessError as e:
             output = e.stdout or ""
             raise RuntimeError(
@@ -293,11 +301,18 @@ def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] =
 
 @app.function(image=blender_image, timeout=1200)
 @modal.web_endpoint(method="POST")
-def render_http(blend_url: str, output_key: Optional[str] = None):
-    """Single render endpoint with enhanced error handling."""
+def render_http(blend_file_bytes: list[int], output_key: Optional[str] = None):
+    """Single render endpoint that receives file bytes directly (like Modal's official example)."""
     try:
-        print(f"Received render request for: {blend_url}")
-        url = render_blend_file.remote(blend_url, output_key=output_key)
+        print(f"Received render request for file with {len(blend_file_bytes)} bytes")
+        
+        # Convert list back to bytes
+        file_bytes = bytes(blend_file_bytes)
+        
+        if output_key is None:
+            output_key = f"renders/{int(time.time())}_{hash(str(blend_file_bytes)) % 10000}.mp4"
+        
+        url = render_blend_file.remote(file_bytes, output_key=output_key)
         # Return just the URL string for frontend compatibility
         return url
     except Exception as e:
