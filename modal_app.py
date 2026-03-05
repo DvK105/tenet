@@ -298,10 +298,12 @@ def render_http(blend_url: str, output_key: Optional[str] = None):
     try:
         print(f"Received render request for: {blend_url}")
         url = render_blend_file.remote(blend_url, output_key=output_key)
-        return {"success": True, "image_url": url}
+        # Return just the URL string for frontend compatibility
+        return url
     except Exception as e:
         print(f"Render failed: {str(e)}")
-        return {"success": False, "error": str(e), "details": "Render processing failed"}
+        # Return error as string with error prefix
+        return f"ERROR: {str(e)}"
 
 
 @app.function(image=blender_image, timeout=1800)
