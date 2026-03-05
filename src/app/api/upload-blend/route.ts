@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID } from "crypto";
-import { supabaseServerClient } from "@/lib/supabase-server";
 
 export async function POST(req: NextRequest) {
   try {
@@ -111,86 +109,65 @@ export async function POST(req: NextRequest) {
       console.log("Blender file info: Zstandard compressed (Blender 3.0+)");
     }
 
-    const blendsBucket =
-      process.env.SUPABASE_BLENDS_BUCKET ?? "blends";
-
-    const id = randomUUID();
-    const ext = ".blend";
-    const path = `blends/${id}${ext}`;
-
-    const { error: uploadError } = await supabaseServerClient.storage
-      .from(blendsBucket)
-      .upload(path, fileBuffer, {
-        contentType: "application/x-blender", // Use proper MIME type for blend files
-        upsert: false,
-      });
-
-    if (uploadError) {
-      console.error("Supabase upload error:", uploadError);
-      return NextResponse.json(
-        { error: "Failed to upload file" },
-        { status: 500 },
-      );
-    }
-
-    // Update the file metadata to ensure correct content type
-    const { error: updateError } = await supabaseServerClient.storage
-      .from(blendsBucket)
-      .update(path, fileBuffer, {
-        contentType: "application/x-blender",
-        upsert: true,
-        metadata: { 
-          originalName: file.name,
-          uploadedAt: new Date().toISOString()
-        }
-      });
-
-    if (updateError) {
-      console.error("Supabase metadata update error:", updateError);
-      // Don't fail the upload, just log the error
-    }
-
-    // Verify the uploaded file by downloading it immediately
-    console.log("Verifying uploaded file...");
-    const { data: downloadData, error: downloadError } = await supabaseServerClient.storage
-      .from(blendsBucket)
-      .download(path);
+    // Send file directly to Modal for processing
+    console.log("Sending file to Modal for processing...");
     
-    if (downloadError) {
-      console.error("Supabase download error:", downloadError);
-    } else if (downloadData) {
-      const downloadedBuffer = Buffer.from(await downloadData.arrayBuffer());
-      console.log("Downloaded file verification:", {
-        originalSize: fileBuffer.length,
-        downloadedSize: downloadedBuffer.length,
-        sizesMatch: fileBuffer.length === downloadedBuffer.length,
-        originalFirstBytes: fileBuffer.subarray(0, 20).toString('hex'),
-        downloadedFirstBytes: downloadedBuffer.subarray(0, 20).toString('hex'),
-        buffersMatch: fileBuffer.equals(downloadedBuffer)
+    // Convert Buffer to array of numbers for Modal API
+    const fileBytes = Array.from(fileBuffer);
+    
+    // Generate output key for the rendered video
+    const outputKey = `renders/${file.name.replace('.blend', '')}_${Date.now()}.mp4`;
+    
+    try {
+      const modalResponse = await fetch(process.env.MODAL_RENDER_URL || "https://your-modal-app--render-http.modal.run", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          blend_file_bytes: fileBytes,
+          output_key: outputKey
+        })
       });
-      
-      if (!fileBuffer.equals(downloadedBuffer)) {
-        console.error("FILE CORRUPTION DETECTED: Uploaded and downloaded files don't match!");
+
+      if (!modalResponse.ok) {
+        const errorText = await modalResponse.text();
+        console.error("Modal processing error:", errorText);
+        return NextResponse.json(
+          { error: "Failed to process file with Modal", details: errorText },
+          { status: 500 }
+        );
       }
-    }
 
-    const { data: signed, error: signedError } =
-      await supabaseServerClient.storage
-        .from(blendsBucket)
-        .createSignedUrl(path, 60 * 60); // 1 hour
+      const result = await modalResponse.text();
+      
+      // Check if the result is an error (Modal returns errors as strings with "ERROR:" prefix)
+      if (result.startsWith("ERROR:")) {
+        console.error("Modal render error:", result);
+        return NextResponse.json(
+          { error: "Rendering failed", details: result },
+          { status: 500 }
+        );
+      }
 
-    if (signedError || !signed?.signedUrl) {
-      console.error("Supabase signed URL error:", signedError);
+      console.log("Modal processing successful:", result);
+
+      return NextResponse.json({
+        blendUrl: result, // Modal returns the signed URL of the rendered video
+        outputKey: outputKey,
+        fileName: file.name,
+        fileSize: fileBuffer.length,
+        compressed: isCompressed
+      });
+
+    } catch (modalError) {
+      console.error("Modal communication error:", modalError);
       return NextResponse.json(
-        { error: "Failed to create signed URL" },
-        { status: 500 },
+        { error: "Failed to communicate with Modal service" },
+        { status: 500 }
       );
     }
 
-    return NextResponse.json({
-      key: path,
-      blendUrl: signed.signedUrl,
-    });
   } catch (error) {
     console.error("Unexpected error in upload-blend:", error);
     return NextResponse.json(

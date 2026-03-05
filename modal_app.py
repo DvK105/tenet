@@ -89,10 +89,18 @@ def _render_blend_bytes(file_bytes: bytes, output_key: str) -> str:
             else:
                 raise RuntimeError(f"Blender binary not found at {BLENDER_BIN}: {e}") from e
 
-        # Validate blend file bytes
+        # Validate blend file bytes (handle both uncompressed and Zstandard compressed)
         print(f"[{job_id}] Validating {len(file_bytes)} bytes")
         
-        if len(file_bytes) < 12 or not file_bytes.startswith(b"BLENDER"):
+        # Check for Zstandard compression (Blender 3.0+)
+        zstd_magic = b'\x28\xb5\x2f\xfd'
+        is_compressed = file_bytes.startswith(zstd_magic)
+        
+        if is_compressed:
+            print(f"[{job_id}] Detected Zstandard compressed Blender file (Blender 3.0+)")
+        elif len(file_bytes) >= 7 and file_bytes[:7] == b"BLENDER":
+            print(f"[{job_id}] Detected uncompressed Blender file")
+        else:
             snippet = file_bytes[:200]
             raise RuntimeError(
                 f"[{job_id}] Invalid .blend file. "
@@ -276,7 +284,15 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
         elif data.startswith(b'\x1f\x8b'):
             print(f"[{job_id}] ERROR: This appears to be a GZIP file, not a .blend file!")
 
-        if len(data) < 12 or not data.startswith(b"BLENDER"):
+        # Validate blend file (handle both uncompressed and Zstandard compressed)
+        zstd_magic = b'\x28\xb5\x2f\xfd'
+        is_compressed = data.startswith(zstd_magic)
+        
+        if is_compressed:
+            print(f"[{job_id}] Detected Zstandard compressed Blender file (Blender 3.0+)")
+        elif len(data) >= 7 and data[:7] == b"BLENDER":
+            print(f"[{job_id}] Detected uncompressed Blender file")
+        else:
             snippet = data[:200]
             raise RuntimeError(
                 f"[{job_id}] Downloaded content is not a .blend file. "
