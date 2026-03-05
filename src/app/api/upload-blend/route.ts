@@ -112,13 +112,13 @@ export async function POST(req: NextRequest) {
     // Send file directly to Modal for processing
     console.log("Sending file to Modal for processing...");
     
-    // Convert Buffer to array of numbers for Modal API (more efficient)
-    const fileBytes = Array.from(fileBuffer);
-    
     // Generate output key for the rendered video
     const outputKey = `renders/${file.name.replace('.blend', '')}_${Date.now()}.mp4`;
     
     try {
+      // Use base64 encoding for more efficient transmission
+      const fileBase64 = fileBuffer.toString('base64');
+      
       // Create AbortController for timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
@@ -129,7 +129,7 @@ export async function POST(req: NextRequest) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          blend_file_bytes: fileBytes,
+          blend_file_base64: fileBase64,
           output_key: outputKey
         }),
         signal: controller.signal

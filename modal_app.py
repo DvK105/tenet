@@ -422,34 +422,61 @@ def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] =
     return successful_renders
 
 
-@app.function(image=blender_image, timeout=1200)
+@app.function(image=blender_image, timeout=1800)
 @modal.fastapi_endpoint(method="POST")
-def render_http(request: dict):
-    """Single render endpoint that receives file bytes directly (like Modal's official example)."""
+def render_http(request):
+    """Single render endpoint that handles file uploads efficiently."""
     try:
-        from pydantic import BaseModel
+        import json
+        import base64
+        from fastapi import Request, HTTPException
+        from fastapi.responses import JSONResponse
         
-        class RenderRequest(BaseModel):
-            blend_file_bytes: list[int]
-            output_key: Optional[str] = None
-        
-        # Parse the request
-        render_request = RenderRequest(**request)
-        blend_file_bytes = render_request.blend_file_bytes
-        output_key = render_request.output_key
-        
-        print(f"Received render request for file with {len(blend_file_bytes)} bytes")
-        
-        # Convert list back to bytes
-        file_bytes = bytes(blend_file_bytes)
+        # Handle the request more efficiently
+        if isinstance(request, dict):
+            # Check for base64 encoded data (new method)
+            if 'blend_file_base64' in request:
+                blend_file_base64 = request['blend_file_base64']
+                output_key = request.get('output_key')
+                
+                print(f"Received render request with base64 data ({len(blend_file_base64)} chars)")
+                
+                # Decode base64 back to bytes
+                file_bytes = base64.b64decode(blend_file_base64)
+                print(f"Decoded to {len(file_bytes)} bytes")
+                
+            # Handle legacy array format (for smaller files)
+            elif 'blend_file_bytes' in request:
+                from pydantic import BaseModel
+                
+                class RenderRequest(BaseModel):
+                    blend_file_bytes: list[int]
+                    output_key: Optional[str] = None
+                
+                render_request = RenderRequest(**request)
+                blend_file_bytes = render_request.blend_file_bytes
+                output_key = render_request.output_key
+                
+                print(f"Received render request for file with {len(blend_file_bytes)} bytes")
+                
+                # Convert list back to bytes
+                file_bytes = bytes(blend_file_bytes)
+            else:
+                raise HTTPException(status_code=400, detail="No file data provided")
+        else:
+            # Handle multipart form data (for larger files)
+            # This would require updating the endpoint to handle FormData
+            raise HTTPException(status_code=400, detail="FormData not supported yet")
         
         if output_key is None:
-            output_key = f"renders/{int(time.time())}_{hash(str(blend_file_bytes)) % 10000}.mp4"
+            output_key = f"renders/{int(time.time())}_{hash(str(file_bytes)) % 10000}.mp4"
         
         # Create a new render function that handles bytes directly
         url = _render_blend_bytes(file_bytes, output_key=output_key)
+        
         # Return just the URL string for frontend compatibility
         return url
+        
     except Exception as e:
         print(f"Render failed: {str(e)}")
         # Return error as string with error prefix
