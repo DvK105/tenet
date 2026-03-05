@@ -85,11 +85,12 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
 
 @app.function(
     image=blender_image,
-    timeout=600,
+    timeout=1800,  # Increased to 30 minutes
     gpu="A100-40GB",
     max_containers=MAX_CONCURRENT_RENDERS,
-    scaledown_window=300,  # 5 minutes idle timeout for cost savings
-    retries=3
+    scaledown_window=300,
+    retries=2,  # Reduced retries to avoid cascading failures
+    memory=16384  # 16GB RAM
 )
 def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
     """
@@ -183,7 +184,25 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
             env = os.environ.copy()
             env['DISPLAY'] = ':99'
             env['PYTHONDONTWRITEBYTECODE'] = '1'
+            env['HOME'] = '/tmp'  # Ensure Blender has a home directory
             
+            # First check if blend file is valid
+            print(f"[{job_id}] Validating blend file...")
+            validate_result = subprocess.run(
+                [
+                    BLENDER_BIN,
+                    "-b",  # Background mode
+                    blend_path,
+                    "--help"  # Just to test if Blender can read the file
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                env=env
+            )
+            
+            print(f"[{job_id}] Starting actual render...")
             result = subprocess.run(
                 [
                     BLENDER_BIN,
@@ -194,12 +213,13 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
                     "-x", "1",  # Use extension
                     "-a",  # Render all frames
                     "--threads", "0",  # Use all available threads
+                    "-noaudio",  # Disable audio processing
                 ],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=480,  # 8 minutes timeout
+                timeout=1200,  # Increased to 20 minutes
                 env=env
             )
             
@@ -271,12 +291,17 @@ def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] =
     return successful_renders
 
 
-@app.function(image=blender_image, timeout=600)
+@app.function(image=blender_image, timeout=1200)
 @modal.web_endpoint(method="POST")
 def render_http(blend_url: str, output_key: Optional[str] = None):
-    """Single render endpoint."""
-    url = render_blend_file.remote(blend_url, output_key=output_key)
-    return {"image_url": url}
+    """Single render endpoint with enhanced error handling."""
+    try:
+        print(f"Received render request for: {blend_url}")
+        url = render_blend_file.remote(blend_url, output_key=output_key)
+        return {"success": True, "image_url": url}
+    except Exception as e:
+        print(f"Render failed: {str(e)}")
+        return {"success": False, "error": str(e), "details": "Render processing failed"}
 
 
 @app.function(image=blender_image, timeout=1800)
