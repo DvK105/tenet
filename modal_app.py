@@ -57,6 +57,113 @@ def _get_supabase_client():
     return create_client(url, key)
 
 
+def _render_blend_bytes(file_bytes: bytes, output_key: str) -> str:
+    """Render blend file from bytes directly without downloading from URL."""
+    start_time = time.time()
+    job_id = f"render_bytes_{int(start_time)}_{hash(str(file_bytes)) % 10000}"
+    
+    print(f"[{job_id}] Starting render from bytes")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
+
+        # Verify Blender installation
+        try:
+            env = os.environ.copy()
+            env['DISPLAY'] = ':99'
+            env['PYTHONDONTWRITEBYTECODE'] = '1'
+
+            v = subprocess.run(
+                [BLENDER_BIN, "--version"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=30,
+                env=env
+            ).stdout
+            print(f"[{job_id}] Using Blender binary: {BLENDER_BIN}")
+        except Exception as e:
+            if os.path.exists(BLENDER_BIN):
+                print(f"[{job_id}] Blender binary exists but version check failed: {e}")
+            else:
+                raise RuntimeError(f"Blender binary not found at {BLENDER_BIN}: {e}") from e
+
+        # Validate blend file bytes
+        print(f"[{job_id}] Validating {len(file_bytes)} bytes")
+        
+        if len(file_bytes) < 12 or not file_bytes.startswith(b"BLENDER"):
+            snippet = file_bytes[:200]
+            raise RuntimeError(
+                f"[{job_id}] Invalid .blend file. "
+                f"length={len(file_bytes)} "
+                f"first_bytes={snippet!r}"
+            )
+
+        # Write blend file to disk
+        blend_path = os.path.join(tmpdir, "scene.blend")
+        with open(blend_path, "wb") as f:
+            f.write(file_bytes)
+
+        # Run Blender render
+        output_base = os.path.join(tmpdir, "render")
+        try:
+            print(f"[{job_id}] Starting Blender render...")
+            render_start = time.time()
+
+            env = os.environ.copy()
+            env['DISPLAY'] = ':99'
+            env['PYTHONDONTWRITEBYTECODE'] = '1'
+            env['HOME'] = '/tmp'
+
+            result = subprocess.run(
+                [
+                    BLENDER_BIN,
+                    "-b",
+                    blend_path,
+                    "-o", output_base,
+                    "-F", "FFmpeg",
+                    "-x", "1",
+                    "-a",
+                    "--threads", "0",
+                    "-noaudio",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=1200,
+                env=env
+            )
+
+            render_time = time.time() - render_start
+            print(f"[{job_id}] Blender render completed in {render_time:.1f}s")
+
+        except subprocess.CalledProcessError as e:
+            output = e.stdout or ""
+            raise RuntimeError(
+                f"[{job_id}] Blender render failed. Blender output:\n" + output[-12000:]
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(f"[{job_id}] Blender render timed out") from e
+
+        output_path = output_base + ".mp4"
+        if not os.path.exists(output_path):
+            raise FileNotFoundError(f"[{job_id}] Expected output {output_path} not found")
+
+        file_size = os.path.getsize(output_path)
+        print(f"[{job_id}] Render output size: {file_size / (1024*1024):.1f} MB")
+
+        # Upload to Supabase
+        print(f"[{job_id}] Uploading to Supabase...")
+        url = _upload_render_to_supabase(output_path, output_key)
+        
+        total_time = time.time() - start_time
+        print(f"[{job_id}] Job completed in {total_time:.1f}s")
+        
+        return url
+
+
 def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
     """Upload rendered file to Supabase with retry logic."""
     max_retries = 3
@@ -312,7 +419,8 @@ def render_http(blend_file_bytes: list[int], output_key: Optional[str] = None):
         if output_key is None:
             output_key = f"renders/{int(time.time())}_{hash(str(blend_file_bytes)) % 10000}.mp4"
         
-        url = render_blend_file.remote(file_bytes, output_key=output_key)
+        # Create a new render function that handles bytes directly
+        url = _render_blend_bytes(file_bytes, output_key=output_key)
         # Return just the URL string for frontend compatibility
         return url
     except Exception as e:
