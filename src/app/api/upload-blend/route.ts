@@ -35,17 +35,24 @@ export async function POST(req: NextRequest) {
       rawFirstBytes: Array.from(fileBuffer.subarray(0, 20))
     });
     
-    // Blender files must start with "BLENDER" (7 bytes ASCII)
+    // Blender files must start with "BLENDER" (7 bytes ASCII) or be Zstandard compressed
     const blenderSignature = Buffer.from('BLENDER');
+    const zstdSignature = Buffer.from([0x28, 0xB5, 0x2F, 0xFD]); // Zstandard magic number
     
-    // TEMPORARILY DISABLE VALIDATION FOR TESTING
-    // We'll upload the file regardless and let Modal handle validation
-    console.log("WARNING: Skipping Blender file validation for debugging");
+    let isBlenderFile = false;
+    let isCompressed = false;
     
-    /*
-    if (fileBuffer.length < blenderSignature.length || 
-        !fileBuffer.subarray(0, blenderSignature.length).equals(blenderSignature)) {
-      
+    if (fileBuffer.length >= blenderSignature.length && 
+        fileBuffer.subarray(0, blenderSignature.length).equals(blenderSignature)) {
+      isBlenderFile = true;
+    } else if (fileBuffer.length >= zstdSignature.length && 
+               fileBuffer.subarray(0, zstdSignature.length).equals(zstdSignature)) {
+      // This is a Zstandard compressed Blender file (Blender 3.0+ with compression enabled)
+      isBlenderFile = true;
+      isCompressed = true;
+    }
+    
+    if (!isBlenderFile) {
       // Check if it's a common compressed format that was renamed
       const zipSignature = Buffer.from([0x50, 0x4B]); // PK
       const gzipSignature = Buffer.from([0x1F, 0x8B]);
@@ -65,10 +72,10 @@ export async function POST(req: NextRequest) {
       
       return NextResponse.json(
         { 
-          error: `Invalid .blend file. This appears to be a ${fileType}, not a Blender file. Please extract the actual .blend file from the archive and upload that instead. If this is already a .blend file from Blender 5.0.1, the file may be corrupted.`,
+          error: `Invalid .blend file. This appears to be a ${fileType}, not a Blender file. Please extract the actual .blend file from the archive and upload that instead.`,
           debug: {
             firstBytes: fileBuffer.subarray(0, 20).toString('hex'),
-            expectedSignature: 'BLENDER',
+            expectedSignature: 'BLENDER or Zstandard compressed Blender file',
             detectedType: fileType,
             fileSize: fileBuffer.length,
             fileName: file.name
@@ -78,8 +85,8 @@ export async function POST(req: NextRequest) {
       );
     }
     
-    // Additional validation: check pointer size and endianness bytes
-    if (fileBuffer.length >= 12) {
+    // Additional validation: check pointer size and endianness bytes (only for uncompressed files)
+    if (!isCompressed && fileBuffer.length >= 12) {
       const pointerSize = String.fromCharCode(fileBuffer[7]);
       const endianness = String.fromCharCode(fileBuffer[8]);
       const version = fileBuffer.subarray(9, 12).toString('ascii');
@@ -87,10 +94,12 @@ export async function POST(req: NextRequest) {
       console.log("Blender header info:", {
         pointerSize: pointerSize === '_' ? '32-bit' : pointerSize === '-' ? '64-bit' : 'unknown',
         endianness: endianness === 'v' ? 'little-endian' : endianness === 'V' ? 'big-endian' : 'unknown',
-        version: version
+        version: version,
+        compressed: false
       });
+    } else if (isCompressed) {
+      console.log("Blender file info: Zstandard compressed (Blender 3.0+)");
     }
-    */
 
     const blendsBucket =
       process.env.SUPABASE_BLENDS_BUCKET ?? "blends";
