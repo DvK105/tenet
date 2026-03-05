@@ -14,6 +14,23 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Validate file extension and magic bytes
+    if (!file.name.toLowerCase().endsWith('.blend')) {
+      return NextResponse.json(
+        { error: "File must have a .blend extension" },
+        { status: 400 },
+      );
+    }
+
+    // Check file magic bytes to ensure it's a valid Blender file
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+    if (fileBuffer.length < 12 || !fileBuffer.subarray(0, 7).equals(Buffer.from('BLENDER'))) {
+      return NextResponse.json(
+        { error: "Invalid .blend file: file does not have correct Blender format" },
+        { status: 400 },
+      );
+    }
+
     const blendsBucket =
       process.env.SUPABASE_BLENDS_BUCKET ?? "blends";
 
@@ -26,7 +43,7 @@ export async function POST(req: NextRequest) {
 
     const { error: uploadError } = await supabaseServerClient.storage
       .from(blendsBucket)
-      .upload(path, buffer, {
+      .upload(path, fileBuffer, {
         contentType: file.type || "application/octet-stream",
         upsert: false,
       });

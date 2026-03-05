@@ -85,6 +85,23 @@ export default function Home() {
             className="block w-full text-sm text-muted-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
             onChange={(event) => {
               const selected = event.target.files?.[0] ?? null;
+              
+              if (selected) {
+                // Validate file extension
+                if (!selected.name.toLowerCase().endsWith('.blend')) {
+                  setError("Please select a file with .blend extension");
+                  setFile(null);
+                  return;
+                }
+                
+                // Validate file size (max 100MB)
+                if (selected.size > 100 * 1024 * 1024) {
+                  setError("File size must be less than 100MB");
+                  setFile(null);
+                  return;
+                }
+              }
+              
               setFile(selected);
               setVideoUrl(null);
               setError(null);
