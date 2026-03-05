@@ -424,13 +424,16 @@ def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] =
 
 @app.function(image=blender_image, timeout=1800)
 @modal.fastapi_endpoint(method="POST")
-def render_http(request):
+def render_http(request: dict):
     """Single render endpoint that handles file uploads efficiently."""
     try:
         import json
         import base64
         from fastapi import Request, HTTPException
         from fastapi.responses import JSONResponse
+        
+        print(f"Received request: {type(request)}")
+        print(f"Request content: {request}")
         
         # Handle the request more efficiently
         if isinstance(request, dict):
@@ -479,6 +482,8 @@ def render_http(request):
         
     except Exception as e:
         print(f"Render failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         # Return error as string with error prefix
         return f"ERROR: {str(e)}"
 
