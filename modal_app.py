@@ -38,7 +38,7 @@ blender_image = (
         f"ln -sf {BLENDER_BIN} /usr/local/bin/blender; "
         f"chmod +x {BLENDER_BIN}"
     )
-    .pip_install("supabase", "requests", "fastapi[standard]")
+    .pip_install("supabase", "requests", "fastapi[standard]", "pydantic")
 )
 
 app = modal.App("blend-renderer")
@@ -407,10 +407,21 @@ def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] =
 
 
 @app.function(image=blender_image, timeout=1200)
-@modal.web_endpoint(method="POST")
-def render_http(blend_file_bytes: list[int], output_key: Optional[str] = None):
+@modal.fastapi_endpoint(method="POST")
+def render_http(request: dict):
     """Single render endpoint that receives file bytes directly (like Modal's official example)."""
     try:
+        from pydantic import BaseModel
+        
+        class RenderRequest(BaseModel):
+            blend_file_bytes: list[int]
+            output_key: Optional[str] = None
+        
+        # Parse the request
+        render_request = RenderRequest(**request)
+        blend_file_bytes = render_request.blend_file_bytes
+        output_key = render_request.output_key
+        
         print(f"Received render request for file with {len(blend_file_bytes)} bytes")
         
         # Convert list back to bytes
@@ -430,15 +441,17 @@ def render_http(blend_file_bytes: list[int], output_key: Optional[str] = None):
 
 
 @app.function(image=blender_image, timeout=1800)
-@modal.web_endpoint(method="POST")
-def render_batch_http(blend_urls: list[str], output_keys: Optional[list[str]] = None):
+@modal.fastapi_endpoint(method="POST")
+def render_batch_http(data: dict):
     """Batch render endpoint for maximum efficiency."""
+    blend_urls = data.get("blend_urls", [])
+    output_keys = data.get("output_keys")
     urls = render_blend_batch.remote(blend_urls, output_keys=output_keys)
     return {"image_urls": urls}
 
 
 @app.function(image=blender_image, timeout=120)
-@modal.web_endpoint(method="GET")
+@modal.fastapi_endpoint(method="GET")
 def get_status():
     """Get system status and configuration."""
     return {
