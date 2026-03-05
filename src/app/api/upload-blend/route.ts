@@ -42,6 +42,14 @@ export async function POST(req: NextRequest) {
     let isBlenderFile = false;
     let isCompressed = false;
     
+    console.log("Signature detection:", {
+      fileStart: fileBuffer.subarray(0, 8).toString('hex'),
+      blenderSig: blenderSignature.toString('hex'),
+      zstdSig: zstdSignature.toString('hex'),
+      blenderMatch: fileBuffer.length >= blenderSignature.length && fileBuffer.subarray(0, blenderSignature.length).equals(blenderSignature),
+      zstdMatch: fileBuffer.length >= zstdSignature.length && fileBuffer.subarray(0, zstdSignature.length).equals(zstdSignature)
+    });
+    
     if (fileBuffer.length >= blenderSignature.length && 
         fileBuffer.subarray(0, blenderSignature.length).equals(blenderSignature)) {
       isBlenderFile = true;
@@ -51,6 +59,8 @@ export async function POST(req: NextRequest) {
       isBlenderFile = true;
       isCompressed = true;
     }
+    
+    console.log("File validation result:", { isBlenderFile, isCompressed });
     
     if (!isBlenderFile) {
       // Check if it's a common compressed format that was renamed
