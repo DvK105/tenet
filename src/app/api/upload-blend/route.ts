@@ -121,17 +121,17 @@ export async function POST(req: NextRequest) {
       
       // Create AbortController for timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout (submit should be fast)
       
-      const modalResponse = await fetch("https://dvk105--blend-renderer-render-http.modal.run", {
+      // Send as form data (Modal FastAPI expects form fields for POST parameters)
+      const modalFormData = new FormData();
+      modalFormData.append('blend_file_base64', fileBase64);
+      modalFormData.append('output_key', outputKey);
+      
+      // Submit async render job (Modal will return immediately with a call_id)
+      const modalResponse = await fetch("https://dvk105--blend-renderer-submit-render-http.modal.run", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          blend_file_base64: fileBase64,
-          output_key: outputKey
-        }),
+        body: modalFormData,
         signal: controller.signal
       });
       
@@ -146,26 +146,35 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const result = await modalResponse.text();
-      
-      // Check if the result is an error (Modal returns errors as strings with "ERROR:" prefix)
-      if (result.startsWith("ERROR:")) {
-        console.error("Modal render error:", result);
+      const submitText = await modalResponse.text();
+      let submitData: { call_id?: string; output_key?: string } = {};
+      try {
+        submitData = JSON.parse(submitText);
+      } catch {
+        // fall through
+      }
+
+      const callId = submitData.call_id;
+      if (!callId) {
+        console.error("Modal submit returned unexpected payload:", submitText);
         return NextResponse.json(
-          { error: "Rendering failed", details: result },
-          { status: 500 }
+          { error: "Modal submit did not return call_id", details: submitText },
+          { status: 502 }
         );
       }
 
-      console.log("Modal processing successful:", result);
+      console.log("Modal render job submitted:", { callId, outputKey });
 
-      return NextResponse.json({
-        blendUrl: result, // Modal returns the signed URL of the rendered video
-        outputKey: outputKey,
-        fileName: file.name,
-        fileSize: fileBuffer.length,
-        compressed: isCompressed
-      });
+      return NextResponse.json(
+        {
+          callId,
+          outputKey,
+          fileName: file.name,
+          fileSize: fileBuffer.length,
+          compressed: isCompressed,
+        },
+        { status: 202 },
+      );
 
     } catch (modalError) {
       console.error("Modal communication error:", modalError);
