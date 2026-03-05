@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
     const outputKey = `renders/${file.name.replace('.blend', '')}_${Date.now()}.mp4`;
     
     try {
-      const modalResponse = await fetch(process.env.MODAL_RENDER_URL || "https://your-modal-app--render-http.modal.run", {
+      const modalResponse = await fetch("https://dvk105--blend-renderer-render-http.modal.run", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
