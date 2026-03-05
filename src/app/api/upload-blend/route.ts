@@ -24,9 +24,40 @@ export async function POST(req: NextRequest) {
 
     // Check file magic bytes to ensure it's a valid Blender file
     const fileBuffer = Buffer.from(await file.arrayBuffer());
-    if (fileBuffer.length < 12 || !fileBuffer.subarray(0, 7).equals(Buffer.from('BLENDER'))) {
+    
+    // Debug logging
+    console.log("File info:", {
+      name: file.name,
+      size: fileBuffer.length,
+      type: file.type,
+      firstBytes: fileBuffer.subarray(0, 20).toString('hex')
+    });
+    
+    // Blender files can have different magic bytes depending on version
+    // Try multiple possible signatures
+    const blenderSignatures = [
+      Buffer.from('BLENDER'),
+      Buffer.from('BLENDER-v'),  // Some versions
+      Buffer.from('BLEN2'),      // Older versions
+    ];
+    
+    let isValidBlend = false;
+    for (const sig of blenderSignatures) {
+      if (fileBuffer.length >= sig.length && fileBuffer.subarray(0, sig.length).equals(sig)) {
+        isValidBlend = true;
+        break;
+      }
+    }
+    
+    if (!isValidBlend) {
       return NextResponse.json(
-        { error: "Invalid .blend file: file does not have correct Blender format" },
+        { 
+          error: "Invalid .blend file: file does not have correct Blender format",
+          debug: {
+            firstBytes: fileBuffer.subarray(0, 20).toString('hex'),
+            expectedSignatures: blenderSignatures.map(s => s.toString())
+          }
+        },
         { status: 400 },
       );
     }
@@ -37,9 +68,6 @@ export async function POST(req: NextRequest) {
     const id = randomUUID();
     const ext = ".blend";
     const path = `blends/${id}${ext}`;
-
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
 
     const { error: uploadError } = await supabaseServerClient.storage
       .from(blendsBucket)
