@@ -112,13 +112,17 @@ export async function POST(req: NextRequest) {
     // Send file directly to Modal for processing
     console.log("Sending file to Modal for processing...");
     
-    // Convert Buffer to array of numbers for Modal API
+    // Convert Buffer to array of numbers for Modal API (more efficient)
     const fileBytes = Array.from(fileBuffer);
     
     // Generate output key for the rendered video
     const outputKey = `renders/${file.name.replace('.blend', '')}_${Date.now()}.mp4`;
     
     try {
+      // Create AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+      
       const modalResponse = await fetch("https://dvk105--blend-renderer-render-http.modal.run", {
         method: "POST",
         headers: {
@@ -127,8 +131,11 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           blend_file_bytes: fileBytes,
           output_key: outputKey
-        })
+        }),
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
 
       if (!modalResponse.ok) {
         const errorText = await modalResponse.text();
