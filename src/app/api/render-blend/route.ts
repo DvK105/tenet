@@ -59,10 +59,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const data = await modalResponse.json();
+    const data = await modalResponse.text();
+    
+    // Modal returns the URL as a plain string, not JSON
+    if (data.startsWith('ERROR:')) {
+      const errorMessage = data.substring(6); // Remove 'ERROR:' prefix
+      console.error("Modal render error:", errorMessage);
+      return NextResponse.json(
+        { error: "Modal render failed", modalError: errorMessage },
+        { status: 502 }
+      );
+    }
 
     return NextResponse.json({
-      imageUrl: data.image_url ?? data.imageUrl,
+      imageUrl: data, // The video URL string
       outputKey,
     });
   } catch (error) {
