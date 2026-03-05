@@ -114,6 +114,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Verify the uploaded file by downloading it immediately
+    console.log("Verifying uploaded file...");
+    const { data: downloadData, error: downloadError } = await supabaseServerClient.storage
+      .from(blendsBucket)
+      .download(path);
+    
+    if (downloadError) {
+      console.error("Supabase download error:", downloadError);
+    } else if (downloadData) {
+      const downloadedBuffer = Buffer.from(await downloadData.arrayBuffer());
+      console.log("Downloaded file verification:", {
+        originalSize: fileBuffer.length,
+        downloadedSize: downloadedBuffer.length,
+        sizesMatch: fileBuffer.length === downloadedBuffer.length,
+        originalFirstBytes: fileBuffer.subarray(0, 20).toString('hex'),
+        downloadedFirstBytes: downloadedBuffer.subarray(0, 20).toString('hex'),
+        buffersMatch: fileBuffer.equals(downloadedBuffer)
+      });
+      
+      if (!fileBuffer.equals(downloadedBuffer)) {
+        console.error("FILE CORRUPTION DETECTED: Uploaded and downloaded files don't match!");
+      }
+    }
+
     const { data: signed, error: signedError } =
       await supabaseServerClient.storage
         .from(blendsBucket)
