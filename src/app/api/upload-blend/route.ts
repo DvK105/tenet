@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
     const { error: uploadError } = await supabaseServerClient.storage
       .from(blendsBucket)
       .upload(path, fileBuffer, {
-        contentType: file.type || "application/octet-stream",
+        contentType: "application/x-blender", // Use proper MIME type for blend files
         upsert: false,
       });
 
@@ -112,6 +112,23 @@ export async function POST(req: NextRequest) {
         { error: "Failed to upload file" },
         { status: 500 },
       );
+    }
+
+    // Update the file metadata to ensure correct content type
+    const { error: updateError } = await supabaseServerClient.storage
+      .from(blendsBucket)
+      .update(path, fileBuffer, {
+        contentType: "application/x-blender",
+        upsert: true,
+        metadata: { 
+          originalName: file.name,
+          uploadedAt: new Date().toISOString()
+        }
+      });
+
+    if (updateError) {
+      console.error("Supabase metadata update error:", updateError);
+      // Don't fail the upload, just log the error
     }
 
     // Verify the uploaded file by downloading it immediately

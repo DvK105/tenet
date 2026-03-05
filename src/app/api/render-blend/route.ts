@@ -23,27 +23,37 @@ export async function POST(req: NextRequest) {
     const blendsBucket =
       process.env.SUPABASE_BLENDS_BUCKET ?? "blends";
 
-    const { data: signed, error: signedError } =
+    // Download the file from Supabase instead of creating a signed URL
+    const { data: fileData, error: downloadError } =
       await supabaseServerClient.storage
         .from(blendsBucket)
-        .createSignedUrl(key, 60 * 60); // 1 hour
+        .download(key);
 
-    if (signedError || !signed?.signedUrl) {
-      console.error("Supabase signed URL error:", signedError);
+    if (downloadError || !fileData) {
+      console.error("Supabase download error:", downloadError);
       return NextResponse.json(
-        { error: "Failed to create signed URL" },
+        { error: "Failed to download file from storage" },
         { status: 500 },
       );
     }
 
+    // Convert file to bytes
+    const fileBytes = new Uint8Array(await fileData.arrayBuffer());
+    
     const outputKey = `renders/${randomUUID()}.mp4`;
 
-    const modalUrl = new URL(modalRenderEndpoint!);
-    modalUrl.searchParams.set("blend_url", signed.signedUrl);
-    modalUrl.searchParams.set("output_key", outputKey);
-
-    const modalResponse = await fetch(modalUrl.toString(), {
+    // Call Modal with file bytes directly (like the official example)
+    const modalUrl = process.env.MODAL_RENDER_ENDPOINT!;
+    
+    const modalResponse = await fetch(modalUrl, {
       method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        blend_file_bytes: Array.from(fileBytes), // Convert to regular array for JSON serialization
+        output_key: outputKey
+      }),
     });
 
     if (!modalResponse.ok) {
