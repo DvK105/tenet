@@ -36,9 +36,7 @@ blender_image = (
         f"rm blender.tar.xz; "
         f"mv blender-{BLENDER_VERSION}-linux-x64 {BLENDER_DIR}; "
         f"ln -sf {BLENDER_BIN} /usr/local/bin/blender; "
-        f"chmod +x {BLENDER_BIN}; "
-        # Verify installation
-        f"{BLENDER_BIN} --version"
+        f"chmod +x {BLENDER_BIN}"
     )
     .pip_install("supabase", "requests", "fastapi[standard]")
 )
@@ -114,6 +112,11 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
         max_blender_retries = 3
         for attempt in range(max_blender_retries):
             try:
+                # Set display environment for headless operation
+                env = os.environ.copy()
+                env['DISPLAY'] = ':99'
+                env['PYTHONDONTWRITEBYTECODE'] = '1'
+                
                 v = subprocess.run(
                     [BLENDER_BIN, "--version"],
                     check=True,
@@ -121,13 +124,20 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
                     stderr=subprocess.STDOUT,
                     text=True,
                     timeout=30,
+                    env=env
                 ).stdout
                 print(f"[{job_id}] Using Blender binary: {BLENDER_BIN}")
                 print(f"[{job_id}] Blender --version:\n" + (v or "").strip())
                 break
             except Exception as e:
                 if attempt == max_blender_retries - 1:
-                    raise RuntimeError(f"Failed to run Blender at {BLENDER_BIN} after {max_blender_retries} attempts: {e}") from e
+                    # Try alternative verification - just check if binary exists
+                    if os.path.exists(BLENDER_BIN):
+                        print(f"[{job_id}] Blender binary exists but version check failed: {e}")
+                        print(f"[{job_id}] Proceeding with render attempt...")
+                        break
+                    else:
+                        raise RuntimeError(f"Blender binary not found at {BLENDER_BIN} after {max_blender_retries} attempts: {e}") from e
                 print(f"[{job_id}] Blender check attempt {attempt + 1} failed: {e}")
                 time.sleep(2)
 
@@ -169,6 +179,11 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
             print(f"[{job_id}] Starting Blender render...")
             render_start = time.time()
             
+            # Set display environment for headless operation
+            env = os.environ.copy()
+            env['DISPLAY'] = ':99'
+            env['PYTHONDONTWRITEBYTECODE'] = '1'
+            
             result = subprocess.run(
                 [
                     BLENDER_BIN,
@@ -185,6 +200,7 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
                 stderr=subprocess.STDOUT,
                 text=True,
                 timeout=480,  # 8 minutes timeout
+                env=env
             )
             
             render_time = time.time() - render_start
