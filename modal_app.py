@@ -388,7 +388,7 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
 @app.function(
     image=blender_image,
     timeout=1800,  # 30 minutes for batch
-    gpu="A100-40GB",
+    gpu="t4",
     max_containers=MAX_CONCURRENT_RENDERS,
     scaledown_window=300,
     retries=3
