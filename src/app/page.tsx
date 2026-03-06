@@ -34,28 +34,44 @@ export default function Home() {
         throw new Error(body.error ?? "Upload failed");
       }
 
-      const uploadData: { key: string; blendUrl: string } = await uploadRes.json();
+      const uploadData: { callId: string } = await uploadRes.json();
+      if (!uploadData.callId) {
+        throw new Error("Upload did not return callId");
+      }
 
-      // 2) Trigger render in Modal via our API
+      // 2) Poll render status until done
       setStatus("rendering");
-      const renderRes = await fetch("/api/render-blend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: uploadData.key }),
-      });
+      const startedAt = Date.now();
+      const maxWaitMs = 30 * 60 * 1000; // 30 minutes
 
-      if (!renderRes.ok) {
-        const body = await renderRes.json().catch(() => ({}));
-        throw new Error(body.error ?? "Render failed");
+      while (true) {
+        if (Date.now() - startedAt > maxWaitMs) {
+          throw new Error("Render timed out");
+        }
+
+        const statusRes = await fetch(`/api/render-status?callId=${encodeURIComponent(uploadData.callId)}`);
+        if (!statusRes.ok) {
+          const body = await statusRes.json().catch(() => ({}));
+          throw new Error(body.error ?? "Failed to fetch render status");
+        }
+
+        const statusData: { status?: string; url?: string; error?: string } = await statusRes.json();
+
+        if (statusData.status === "done") {
+          if (!statusData.url) {
+            throw new Error("Render completed but no URL was returned");
+          }
+          setVideoUrl(statusData.url);
+          setStatus("done");
+          break;
+        }
+
+        if (statusData.status === "error") {
+          throw new Error(statusData.error ?? "Render failed");
+        }
+
+        await new Promise((r) => setTimeout(r, 2000));
       }
-
-      const renderData: { imageUrl?: string } = await renderRes.json();
-      if (!renderData.imageUrl) {
-        throw new Error("Render did not return a video URL");
-      }
-
-      setVideoUrl(renderData.imageUrl);
-      setStatus("done");
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Something went wrong during upload/render.";

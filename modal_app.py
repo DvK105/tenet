@@ -7,6 +7,7 @@ import time
 
 import modal
 import requests
+from fastapi import Form
 
 
 BLENDER_VERSION = os.environ.get("BLENDER_VERSION", "5.0.1")
@@ -47,6 +48,30 @@ app = modal.App("blend-renderer")
 MAX_CONCURRENT_RENDERS = int(os.environ.get("MAX_CONCURRENT_RENDERS", "10"))
 GPU_MEMORY = os.environ.get("GPU_MEMORY", "40GB")  # A100 has 40GB
 USE_SPOT_INSTANCES = os.environ.get("USE_SPOT_INSTANCES", "true").lower() == "true"
+
+
+@app.function(
+    image=blender_image,
+    timeout=1800,
+    gpu="A100-40GB",
+    max_containers=MAX_CONCURRENT_RENDERS,
+    scaledown_window=300,
+    retries=2,
+    memory=16384,
+    secrets=[modal.Secret.from_name("supabase")],
+)
+def process_render_base64(blend_file_base64: str, output_key: Optional[str] = None) -> str:
+    import base64
+
+    file_bytes = base64.b64decode(blend_file_base64)
+
+    if output_key is None:
+        import uuid
+        unique_id = str(uuid.uuid4())[:8]  # Short unique suffix
+        output_key = f"renders/{int(time.time() * 1000)}_{unique_id}.mp4"
+
+    url = _render_blend_bytes(file_bytes, output_key=output_key)
+    return url
 
 
 def _get_supabase_client():
@@ -155,9 +180,34 @@ def _render_blend_bytes(file_bytes: bytes, output_key: str) -> str:
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"[{job_id}] Blender render timed out") from e
 
-        output_path = output_base + ".mp4"
-        if not os.path.exists(output_path):
-            raise FileNotFoundError(f"[{job_id}] Expected output {output_path} not found")
+        # Blender's output naming can vary based on scene settings and container format.
+        # Don't assume it's exactly `${output_base}.mp4`; search for produced video files.
+        import glob
+
+        candidates: list[str] = []
+        for ext in ("mp4", "mkv", "avi", "mov"):
+            candidates.extend(glob.glob(os.path.join(tmpdir, f"*.{ext}")))
+            candidates.extend(glob.glob(os.path.join(tmpdir, f"render*.{ext}")))
+
+        # If output path was explicitly produced, prefer it.
+        expected_mp4 = output_base + ".mp4"
+        if os.path.exists(expected_mp4):
+            output_path = expected_mp4
+        elif candidates:
+            # pick the newest file (then largest as tie-breaker)
+            candidates.sort(key=lambda p: (os.path.getmtime(p), os.path.getsize(p)), reverse=True)
+            output_path = candidates[0]
+        else:
+            tail = (result.stdout or "")[-12000:] if "result" in locals() else ""
+            files = []
+            try:
+                files = sorted(os.listdir(tmpdir))
+            except Exception:
+                pass
+            raise FileNotFoundError(
+                f"[{job_id}] Blender completed but no video output was found in {tmpdir}. "
+                f"Files: {files}. Blender output tail:\n{tail}"
+            )
 
         file_size = os.path.getsize(output_path)
         print(f"[{job_id}] Render output size: {file_size / (1024*1024):.1f} MB")
@@ -184,7 +234,11 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
                 data = f.read()
 
             # Upload to Supabase storage
-            client.storage.from_(bucket).upload(output_key, data, {"content-type": "video/mp4"})
+            # Strip 'renders/' prefix if present to avoid double path
+            clean_key = output_key
+            if clean_key.startswith("renders/"):
+                clean_key = clean_key[len("renders/"):]
+            client.storage.from_(bucket).upload(clean_key, data, {"content-type": "video/mp4"})
 
             # Create a signed URL so the app can display the image
             expires_in = int(os.environ.get("SUPABASE_RENDER_URL_TTL_SECONDS", "86400"))
@@ -205,7 +259,8 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
     max_containers=MAX_CONCURRENT_RENDERS,
     scaledown_window=300,
     retries=2,  # Reduced retries to avoid cascading failures
-    memory=16384  # 16GB RAM
+    memory=16384,  # 16GB RAM
+    secrets=[modal.Secret.from_name("supabase")],
 )
 def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
     """
@@ -391,7 +446,8 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> str:
     gpu="t4",
     max_containers=MAX_CONCURRENT_RENDERS,
     scaledown_window=300,
-    retries=3
+    retries=3,
+    secrets=[modal.Secret.from_name("supabase")],
 )
 def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] = None) -> list[str]:
     """
@@ -424,52 +480,19 @@ def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] =
 
 @app.function(image=blender_image, timeout=1800)
 @modal.fastapi_endpoint(method="POST")
-def render_http(request: dict):
+def render_http(
+    blend_file_base64: str = Form(...),
+    output_key: Optional[str] = Form(None),
+):
     """Single render endpoint that handles file uploads efficiently."""
     try:
-        import json
         import base64
-        from fastapi import Request, HTTPException
-        from fastapi.responses import JSONResponse
+
+        print(f"Received render request with base64 data ({len(blend_file_base64)} chars)")
         
-        print(f"Received request: {type(request)}")
-        print(f"Request content: {request}")
-        
-        # Handle the request more efficiently
-        if isinstance(request, dict):
-            # Check for base64 encoded data (new method)
-            if 'blend_file_base64' in request:
-                blend_file_base64 = request['blend_file_base64']
-                output_key = request.get('output_key')
-                
-                print(f"Received render request with base64 data ({len(blend_file_base64)} chars)")
-                
-                # Decode base64 back to bytes
-                file_bytes = base64.b64decode(blend_file_base64)
-                print(f"Decoded to {len(file_bytes)} bytes")
-                
-            # Handle legacy array format (for smaller files)
-            elif 'blend_file_bytes' in request:
-                from pydantic import BaseModel
-                
-                class RenderRequest(BaseModel):
-                    blend_file_bytes: list[int]
-                    output_key: Optional[str] = None
-                
-                render_request = RenderRequest(**request)
-                blend_file_bytes = render_request.blend_file_bytes
-                output_key = render_request.output_key
-                
-                print(f"Received render request for file with {len(blend_file_bytes)} bytes")
-                
-                # Convert list back to bytes
-                file_bytes = bytes(blend_file_bytes)
-            else:
-                raise HTTPException(status_code=400, detail="No file data provided")
-        else:
-            # Handle multipart form data (for larger files)
-            # This would require updating the endpoint to handle FormData
-            raise HTTPException(status_code=400, detail="FormData not supported yet")
+        # Decode base64 back to bytes
+        file_bytes = base64.b64decode(blend_file_base64)
+        print(f"Decoded to {len(file_bytes)} bytes")
         
         if output_key is None:
             output_key = f"renders/{int(time.time())}_{hash(str(file_bytes)) % 10000}.mp4"
@@ -486,6 +509,36 @@ def render_http(request: dict):
         traceback.print_exc()
         # Return error as string with error prefix
         return f"ERROR: {str(e)}"
+
+
+@app.function(image=blender_image, timeout=120)
+@modal.fastapi_endpoint(method="POST")
+async def submit_render_http(
+    blend_file_base64: str = Form(...),
+    output_key: Optional[str] = Form(None),
+):
+    call = await process_render_base64.spawn.aio(blend_file_base64, output_key)
+
+    call_id = getattr(call, "object_id", None) or getattr(call, "id", None)
+    if call_id is None:
+        call_id = str(call)
+
+    return {"call_id": call_id, "output_key": output_key}
+
+
+@app.function(image=blender_image, timeout=120)
+@modal.fastapi_endpoint(method="GET")
+def render_result_http(call_id: str):
+    try:
+        call = modal.FunctionCall.from_id(call_id)
+        result = call.get(timeout=0)
+
+        if isinstance(result, str) and result.startswith("ERROR:"):
+            return {"status": "error", "error": result}
+
+        return {"status": "done", "url": result}
+    except TimeoutError:
+        return {"status": "running"}
 
 
 @app.function(image=blender_image, timeout=1800)
