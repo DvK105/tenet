@@ -120,21 +120,43 @@ export async function POST(req: NextRequest) {
     const outputKey = `renders/${file.name.replace(/\.blend$/i, "")}_${Date.now()}.mp4`;
     const blendStorageKey = `temp/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
 
-    try {
-      const { error: uploadError } = await supabaseServerClient.storage
-        .from(BLENDS_BUCKET)
-        .upload(blendStorageKey, fileBuffer, {
-          contentType: "application/octet-stream",
-          upsert: false,
-        });
+    // Retry helper with exponential backoff
+    const uploadWithRetry = async (retries = 3): Promise<void> => {
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          console.log(`Upload attempt ${attempt}/${retries}`);
+          
+          const { error: uploadError } = await supabaseServerClient.storage
+            .from(BLENDS_BUCKET)
+            .upload(blendStorageKey, fileBuffer, {
+              contentType: "application/octet-stream",
+              upsert: false,
+            });
 
-      if (uploadError) {
-        console.error("Supabase upload error:", uploadError);
-        return NextResponse.json(
-          { error: "Failed to upload file to storage", details: uploadError.message },
-          { status: 500 }
-        );
+          if (uploadError) {
+            throw uploadError;
+          }
+          
+          console.log("Upload successful");
+          return;
+          
+        } catch (error) {
+          console.error(`Upload attempt ${attempt} failed:`, error);
+          
+          if (attempt === retries) {
+            throw error;
+          }
+          
+          // Exponential backoff: 1s, 2s, 4s
+          const delay = Math.pow(2, attempt - 1) * 1000;
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
+    };
+
+    try {
+      await uploadWithRetry();
 
       const { data: signed, error: signError } =
         await supabaseServerClient.storage
@@ -192,9 +214,31 @@ export async function POST(req: NextRequest) {
       });
     } catch (err) {
       console.error("Upload/render start error:", err);
+      
+      // Provide more specific error messages
+      let errorMessage = "Failed to upload file or start render";
+      let statusCode = 500;
+      
+      if (err instanceof Error) {
+        if (err.message.includes('ECONNRESET') || err.message.includes('fetch failed')) {
+          errorMessage = "Network connection failed during upload. Please check your internet connection and try again.";
+          statusCode = 503; // Service Unavailable
+        } else if (err.message.includes('timeout')) {
+          errorMessage = "Upload timed out. The file may be too large or the network is slow. Please try again.";
+          statusCode = 408; // Request Timeout
+        } else if (err.message.includes('StorageUnknownError')) {
+          errorMessage = "Storage service temporarily unavailable. Please try again in a few moments.";
+          statusCode = 503;
+        }
+      }
+      
       return NextResponse.json(
-        { error: "Failed to upload file or start render" },
-        { status: 500 }
+        { 
+          error: errorMessage,
+          details: err instanceof Error ? err.message : "Unknown error",
+          retryable: statusCode === 503 || statusCode === 408
+        },
+        { status: statusCode }
       );
     }
 

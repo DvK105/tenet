@@ -7,5 +7,17 @@ if (!supabaseUrl || !supabaseServiceRoleKey) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
 }
 
-export const supabaseServerClient = createClient(supabaseUrl, supabaseServiceRoleKey);
+export const supabaseServerClient = createClient(supabaseUrl, supabaseServiceRoleKey, {
+  auth: {
+    persistSession: false
+  },
+  global: {
+    fetch: (url, options = {}) => {
+      return fetch(url, {
+        ...options,
+        signal: AbortSignal.timeout(30000), // 30 second timeout
+      });
+    },
+  },
+});
 
