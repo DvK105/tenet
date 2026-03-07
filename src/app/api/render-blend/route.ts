@@ -42,48 +42,49 @@ export async function POST(req: NextRequest) {
     
     const outputKey = `renders/${randomUUID()}.mp4`;
 
-    // Call Modal with file bytes directly (like the official example)
-    const modalUrl = process.env.MODAL_RENDER_ENDPOINT!;
+    // Call Modal with async submit-render endpoint
+    const modalSubmitUrl = "https://ksshalini1--blend-renderer-submit-render-http.modal.run";
     
-    const modalResponse = await fetch(modalUrl, {
+    // Convert file to base64 for submission
+    const fileBase64 = Buffer.from(fileBytes).toString('base64');
+    
+    const submitFormData = new FormData();
+    submitFormData.append('blend_file_base64', fileBase64);
+    submitFormData.append('output_key', outputKey);
+    
+    // Submit async render job
+    const submitResponse = await fetch(modalSubmitUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        blend_file_bytes: Array.from(fileBytes), // Convert to regular array for JSON serialization
-        output_key: outputKey
-      }),
+      body: submitFormData
     });
-
-    if (!modalResponse.ok) {
-      const text = await modalResponse.text();
-      console.error("Modal render error:", modalResponse.status, text);
+    
+    if (!submitResponse.ok) {
+      const errorText = await submitResponse.text();
+      console.error("Modal submit error:", errorText);
       return NextResponse.json(
-        {
-          error: "Modal render failed",
-          modalStatus: modalResponse.status,
-          modalBody: text,
-        },
-        { status: 502 },
+        { error: "Failed to submit render job", details: errorText },
+        { status: 500 }
       );
     }
-
-    const data = await modalResponse.text();
     
-    // Modal returns the URL as a plain string, not JSON
-    if (data.startsWith('ERROR:')) {
-      const errorMessage = data.substring(6); // Remove 'ERROR:' prefix
-      console.error("Modal render error:", errorMessage);
+    const submitData = await submitResponse.json();
+    const callId = submitData.call_id;
+    
+    if (!callId) {
       return NextResponse.json(
-        { error: "Modal render failed", modalError: errorMessage },
+        { error: "Modal submit did not return call_id" },
         { status: 502 }
       );
     }
-
+    
+    // Poll for result
+    const resultUrl = `https://ksshalini1--blend-renderer-render-result-http.modal.run?call_id=${callId}`;
+    
     return NextResponse.json({
-      imageUrl: data, // The video URL string
+      callId,
+      resultUrl,
       outputKey,
+      status: "submitted"
     });
   } catch (error) {
     console.error("Unexpected error in render-blend:", error);

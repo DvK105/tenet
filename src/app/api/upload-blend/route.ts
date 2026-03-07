@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { supabaseServerClient } from "@/lib/supabase-server";
+
+const BLENDS_BUCKET = process.env.SUPABASE_BLENDS_BUCKET ?? "blends";
+const MODAL_RENDER_FROM_URL =
+  "https://ksshalini1--blend-renderer-render-from-url-http.modal.run";
 
 export async function POST(req: NextRequest) {
   try {
@@ -109,77 +114,86 @@ export async function POST(req: NextRequest) {
       console.log("Blender file info: Zstandard compressed (Blender 3.0+)");
     }
 
-    // Send file directly to Modal for processing
-    console.log("Sending file to Modal for processing...");
-    
-    // Generate output key for the rendered video
-    const outputKey = `renders/${file.name.replace('.blend', '')}_${Date.now()}.mp4`;
-    
-    try {
-      // Use base64 encoding for more efficient transmission
-      const fileBase64 = fileBuffer.toString('base64');
-      
-      // Create AbortController for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout (submit should be fast)
-      
-      // Send as form data (Modal FastAPI expects form fields for POST parameters)
-      const modalFormData = new FormData();
-      modalFormData.append('blend_file_base64', fileBase64);
-      modalFormData.append('output_key', outputKey);
-      
-      // Submit async render job (Modal will return immediately with a call_id)
-      const modalResponse = await fetch("https://dvk105--blend-renderer-submit-render-http.modal.run", {
-        method: "POST",
-        body: modalFormData,
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
+    // Upload blend to Supabase, then start Modal render via URL (avoids large request body / socket close)
+    console.log("Uploading blend to Supabase and starting Modal render...");
 
-      if (!modalResponse.ok) {
-        const errorText = await modalResponse.text();
-        console.error("Modal processing error:", errorText);
+    const outputKey = `renders/${file.name.replace(/\.blend$/i, "")}_${Date.now()}.mp4`;
+    const blendStorageKey = `temp/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+
+    try {
+      const { error: uploadError } = await supabaseServerClient.storage
+        .from(BLENDS_BUCKET)
+        .upload(blendStorageKey, fileBuffer, {
+          contentType: "application/octet-stream",
+          upsert: false,
+        });
+
+      if (uploadError) {
+        console.error("Supabase upload error:", uploadError);
         return NextResponse.json(
-          { error: "Failed to process file with Modal", details: errorText },
+          { error: "Failed to upload file to storage", details: uploadError.message },
           { status: 500 }
         );
       }
 
-      const submitText = await modalResponse.text();
-      let submitData: { call_id?: string; output_key?: string } = {};
-      try {
-        submitData = JSON.parse(submitText);
-      } catch {
-        // fall through
+      const { data: signed, error: signError } =
+        await supabaseServerClient.storage
+          .from(BLENDS_BUCKET)
+          .createSignedUrl(blendStorageKey, 3600); // 1 hour for Modal to download
+
+      if (signError || !signed?.signedUrl) {
+        console.error("Signed URL error:", signError);
+        return NextResponse.json(
+          { error: "Failed to create signed URL for render" },
+          { status: 500 }
+        );
       }
 
-      const callId = submitData.call_id;
-      if (!callId) {
-        console.error("Modal submit returned unexpected payload:", submitText);
+      const modalResponse = await fetch(MODAL_RENDER_FROM_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          blend_url: signed.signedUrl,
+          output_key: outputKey,
+        }),
+      });
+
+      if (!modalResponse.ok) {
+        const errorText = await modalResponse.text();
+        console.error("Modal render-from-URL error:", errorText);
         return NextResponse.json(
-          { error: "Modal submit did not return call_id", details: submitText },
+          { error: "Failed to start render on Modal", details: errorText },
+          { status: 500 }
+        );
+      }
+
+      const modalData = (await modalResponse.json()) as { call_id?: string; error?: string };
+      if (modalData.error) {
+        return NextResponse.json(
+          { error: "Modal rejected request", details: modalData.error },
           { status: 502 }
         );
       }
 
-      console.log("Modal render job submitted:", { callId, outputKey });
+      const callId = modalData.call_id;
+      if (!callId) {
+        return NextResponse.json(
+          { error: "Modal did not return a call ID" },
+          { status: 502 }
+        );
+      }
 
+      return NextResponse.json({
+        callId,
+        outputKey,
+        fileName: file.name,
+        fileSize: fileBuffer.length,
+        compressed: isCompressed,
+      });
+    } catch (err) {
+      console.error("Upload/render start error:", err);
       return NextResponse.json(
-        {
-          callId,
-          outputKey,
-          fileName: file.name,
-          fileSize: fileBuffer.length,
-          compressed: isCompressed,
-        },
-        { status: 202 },
-      );
-
-    } catch (modalError) {
-      console.error("Modal communication error:", modalError);
-      return NextResponse.json(
-        { error: "Failed to communicate with Modal service" },
+        { error: "Failed to upload file or start render" },
         { status: 500 }
       );
     }
