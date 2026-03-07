@@ -29,6 +29,10 @@ export default function Home() {
     frames_done?: number;
     total_frames?: number;
     eta_seconds?: number;
+    stuck?: boolean;
+    blender_eta?: string;
+    avg_frame_time?: number;
+    total_polls?: number;
   } | null>(null);
   const [pollCount, setPollCount] = useState(0);
   const [lastCheckMs, setLastCheckMs] = useState<number | null>(null);
@@ -76,7 +80,7 @@ export default function Home() {
       // 2) Poll render status until done
       setStatus("rendering");
       const startedAt = Date.now();
-      const maxWaitMs = 30 * 60 * 1000; // 30 minutes
+      const maxWaitMs = 45 * 60 * 1000; // 45 minutes
       let poll = 0;
 
       while (true) {
@@ -111,6 +115,10 @@ export default function Home() {
             frames_done?: number;
             total_frames?: number;
             eta_seconds?: number;
+            stuck?: boolean;
+            blender_eta?: string;
+            avg_frame_time?: number;
+            total_polls?: number;
           };
         } = await statusRes.json();
 
@@ -134,7 +142,7 @@ export default function Home() {
           throw new Error(statusData.error ?? "Render failed");
         }
 
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 3000));
       }
       setProgress(null);
       setStatusMessage(null);
@@ -199,9 +207,9 @@ export default function Home() {
                   return;
                 }
                 
-                // Validate file size (max 100MB)
-                if (selected.size > 100 * 1024 * 1024) {
-                  setError("File size must be less than 100MB");
+                // Validate file size (max 200MB)
+                if (selected.size > 200 * 1024 * 1024) {
+                  setError("File size must be less than 200MB");
                   setFile(null);
                   return;
                 }
@@ -230,33 +238,55 @@ export default function Home() {
                 {lastStatus != null && lastCheckMs != null && (
                   <> · Last: {lastStatus} in {lastCheckMs}ms</>
                 )}
+                {progress?.total_polls && (
+                  <> · Debug: {progress.total_polls} backend polls</>
+                )}
               </p>
               {statusMessage && (
                 <p className="font-medium text-foreground">{statusMessage}</p>
               )}
               {progress && (
-                <p>
-                  {progress.frames_done != null &&
-                  progress.total_frames != null &&
-                  progress.total_frames > 0 ? (
-                    <>
-                      Frame {progress.frames_done}/{progress.total_frames}
-                      {progress.total_frames - progress.frames_done > 0 && (
-                        <> · {progress.total_frames - progress.frames_done} frames left</>
-                      )}
-                      {progress.eta_seconds != null && progress.eta_seconds > 0 && (
-                        <> · ~{formatSeconds(progress.eta_seconds)} left</>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      Elapsed: {formatSeconds(progress.elapsed_seconds ?? 0)}
-                      {progress.eta_seconds != null && progress.eta_seconds > 0 && (
-                        <> · ~{formatSeconds(progress.eta_seconds)} left</>
-                      )}
-                    </>
+                <div className="space-y-1">
+                  <p>
+                    {progress.frames_done != null &&
+                    progress.total_frames != null &&
+                    progress.total_frames > 0 ? (
+                      <>
+                        Frame {progress.frames_done}/{progress.total_frames}
+                        {progress.total_frames - progress.frames_done > 0 && (
+                          <> · {progress.total_frames - progress.frames_done} frames left</>
+                        )}
+                      </>
+                    ) : (
+                      <>Elapsed: {formatSeconds(progress.elapsed_seconds ?? 0)}</>
+                    )}
+                  </p>
+                  
+                  {/* Display Blender's own time estimate if available */}
+                  {progress.blender_eta && (
+                    <p className="text-blue-600 font-medium">
+                      Blender ETA: {progress.blender_eta}
+                    </p>
                   )}
-                </p>
+                  
+                  {/* Display calculated ETA */}
+                  {progress.eta_seconds != null && progress.eta_seconds > 0 && (
+                    <p>
+                      ~{formatSeconds(progress.eta_seconds)} remaining
+                      {progress.avg_frame_time && (
+                        <> · {progress.avg_frame_time.toFixed(1)}s/frame</>
+                      )}
+                    </p>
+                  )}
+                  
+                  {/* Display warnings */}
+                  {progress.stuck && (
+                    <p className="text-orange-500">Render appears stuck</p>
+                  )}
+                  {progress.eta_seconds === -1 && (
+                    <p className="text-red-500">No progress for 5+ minutes</p>
+                  )}
+                </div>
               )}
             </div>
           )}

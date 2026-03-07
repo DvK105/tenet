@@ -57,6 +57,10 @@ export async function GET(req: NextRequest) {
       frames_done?: number;
       total_frames?: number;
       eta_seconds?: number;
+      stuck?: boolean;
+      blender_eta?: string;
+      avg_frame_time?: number;
+      total_polls?: number;
     } | null = null;
     if (data.status === "running") {
       try {
