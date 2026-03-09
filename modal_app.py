@@ -270,7 +270,7 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
 
             # Create a signed URL so the app can display the image
             expires_in = int(os.environ.get("SUPABASE_RENDER_URL_TTL_SECONDS", "86400"))
-            signed = client.storage.from_(bucket).create_signed_url(output_key, expires_in)
+            signed = client.storage.from_(bucket).create_signed_url(clean_key, expires_in)
             return signed["signed_url"]
         except Exception as e:
             if attempt == max_retries - 1:
