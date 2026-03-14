@@ -29,11 +29,69 @@ export default function Home() {
     frames_done?: number;
     total_frames?: number;
     eta_seconds?: number;
+    blender_remaining?: string;
+    blender_elapsed?: string;
+    estimate_source?: string;
   } | null>(null);
   const [pollCount, setPollCount] = useState(0);
   const [lastCheckMs, setLastCheckMs] = useState<number | null>(null);
   const [lastStatus, setLastStatus] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<{
+    estimated_time_seconds: number;
+    estimated_time_formatted: string;
+    complexity_score: number;
+    total_frames: number;
+    resolution: string;
+    samples: number;
+    engine: string;
+    accuracy_score: number;
+    accuracy_description: string;
+  } | null>(null);
+  const [estimating, setEstimating] = useState(false);
+
+  async function getEstimate(file: File) {
+    setEstimating(true);
+    setEstimate(null);
+    try {
+      // Convert file to base64
+      const fileBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          // Remove data URL prefix
+          const base64 = result.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const response = await fetch("/api/estimate-render", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          blend_file_base64: fileBase64
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Estimate API error:", response.status, errorText);
+        throw new Error(`Failed to get estimate: ${response.status} ${errorText}`);
+      }
+
+      const estimateData = await response.json();
+      setEstimate(estimateData);
+    } catch (err) {
+      console.error("Failed to get estimate:", err);
+      // Don't show error to user, just don't show estimate
+    } finally {
+      setEstimating(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -111,6 +169,9 @@ export default function Home() {
             frames_done?: number;
             total_frames?: number;
             eta_seconds?: number;
+            blender_remaining?: string;
+            blender_elapsed?: string;
+            estimate_source?: string;
           };
         } = await statusRes.json();
 
@@ -211,6 +272,12 @@ export default function Home() {
               setVideoUrl(null);
               setError(null);
               setStatus("idle");
+              setEstimate(null);
+              
+              // Get estimate for the selected file
+              if (selected) {
+                getEstimate(selected);
+              }
             }}
           />
           <button
@@ -223,6 +290,33 @@ export default function Home() {
                 ? "Rendering..."
                 : "Upload & render"}
           </button>
+          
+          {/* Estimate Display */}
+          {estimating && (
+            <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+              <p>Calculating render estimate...</p>
+            </div>
+          )}
+          
+          {estimate && !estimating && status === "idle" && (
+            <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-foreground">Estimated render time:</span>
+                <span className="text-foreground">{estimate.estimated_time_formatted}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Accuracy:</span>
+                <span className="text-muted-foreground text-xs">{estimate.accuracy_description}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <div>Frames: {estimate.total_frames}</div>
+                <div>Resolution: {estimate.resolution}</div>
+                <div>Samples: {estimate.samples}</div>
+                <div>Engine: {estimate.engine}</div>
+              </div>
+            </div>
+          )}
+          
           {status === "rendering" && (
             <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
               <p>
@@ -244,19 +338,39 @@ export default function Home() {
                       {progress.total_frames - progress.frames_done > 0 && (
                         <> · {progress.total_frames - progress.frames_done} frames left</>
                       )}
-                      {progress.eta_seconds != null && progress.eta_seconds > 0 && (
-                        <> · ~{formatSeconds(progress.eta_seconds)} left</>
-                      )}
                     </>
                   ) : (
-                    <>
-                      Elapsed: {formatSeconds(progress.elapsed_seconds ?? 0)}
-                      {progress.eta_seconds != null && progress.eta_seconds > 0 && (
-                        <> · ~{formatSeconds(progress.eta_seconds)} left</>
-                      )}
-                    </>
+                    <>Elapsed: {formatSeconds(progress.elapsed_seconds ?? 0)}</>
+                  )}
+                  
+                  {/* Show Blender's own time estimation if available */}
+                  {progress.blender_remaining && (
+                    <> · Blender ETA: {progress.blender_remaining}</>
+                  )}
+                  {progress.blender_elapsed && (
+                    <> · Blender Time: {progress.blender_elapsed}</>
+                  )}
+                  
+                  {/* Show calculated ETA as fallback */}
+                  {!progress.blender_remaining && progress.eta_seconds != null && progress.eta_seconds > 0 && (
+                    <> · ~{formatSeconds(progress.eta_seconds)} left</>
+                  )}
+                  
+                  {/* Show source of time estimation */}
+                  {progress.estimate_source && (
+                    <span className="text-xs text-muted-foreground ml-1">
+                      ({progress.estimate_source})
+                    </span>
                   )}
                 </p>
+              )}
+              {estimate && (
+                <div className="text-xs text-muted-foreground border-t pt-2 mt-2">
+                  Original estimate: {estimate.estimated_time_formatted} 
+                  <span className="ml-2">
+                    ({estimate.accuracy_description.toLowerCase()})
+                  </span>
+                </div>
               )}
             </div>
           )}

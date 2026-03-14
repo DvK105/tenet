@@ -53,6 +53,100 @@ GPU_MEMORY = os.environ.get("GPU_MEMORY", "16GB")  # T4 has 16GB
 USE_SPOT_INSTANCES = os.environ.get("USE_SPOT_INSTANCES", "true").lower() == "true"
 
 
+@app.function(image=blender_image, timeout=120)
+@modal.fastapi_endpoint(method="POST")
+def estimate_render_time(request: dict):
+    """Estimate render time for a blend file without actually rendering."""
+    import base64
+    
+    try:
+        blend_file_base64 = request.get("blend_file_base64")
+        if not blend_file_base64:
+            return {"error": "Missing blend_file_base64 in request"}
+        
+        file_bytes = base64.b64decode(blend_file_base64)
+        job_id = f"estimate_{int(time.time())}"
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.chdir(tmpdir)
+            
+            # Write blend file to disk
+            blend_path = os.path.join(tmpdir, "scene.blend")
+            with open(blend_path, "wb") as f:
+                f.write(file_bytes)
+            
+            # Analyze scene complexity
+            complexity = _analyze_blend_file_complexity(blend_path, job_id)
+            estimated_time = complexity.get('estimated_total_time', 600)
+            
+            # Calculate accuracy based on complexity factors
+            accuracy_score = _calculate_accuracy_score(complexity)
+            
+            return {
+                "estimated_time_seconds": estimated_time,
+                "estimated_time_formatted": _format_time_estimate(estimated_time),
+                "complexity_score": complexity.get('complexity_score', 1.0),
+                "total_frames": complexity.get('frames', 1),
+                "resolution": complexity.get('resolution', '1920x1080'),
+                "samples": complexity.get('samples', 128),
+                "engine": complexity.get('engine', 'CYCLES'),
+                "accuracy_score": accuracy_score,
+                "accuracy_description": _get_accuracy_description(accuracy_score)
+            }
+            
+    except Exception as e:
+        return {"error": f"Failed to estimate render time: {str(e)}"}
+
+
+def _calculate_accuracy_score(complexity: Dict[str, Any]) -> float:
+    """Calculate accuracy score for the estimate (0-1, higher is more accurate)."""
+    score = 0.8  # Base accuracy
+    
+    # Reduce accuracy for complex scenes
+    complexity_score = complexity.get('complexity_score', 1.0)
+    if complexity_score > 20:
+        score -= 0.3  # Very complex scenes are harder to estimate
+    elif complexity_score > 10:
+        score -= 0.2
+    elif complexity_score > 5:
+        score -= 0.1
+    
+    # Increase accuracy for simple scenes
+    if complexity_score < 2:
+        score += 0.1
+    
+    # Adjust for render engine
+    engine = complexity.get('engine', 'CYCLES')
+    if engine == 'CYCLES':
+        score -= 0.1  # Cycles is more variable than Eevee
+    
+    return max(0.3, min(0.95, score))  # Clamp between 30% and 95%
+
+
+def _get_accuracy_description(score: float) -> str:
+    """Get human-readable accuracy description."""
+    if score >= 0.8:
+        return "High accuracy - usually within ±20%"
+    elif score >= 0.6:
+        return "Medium accuracy - usually within ±50%"
+    else:
+        return "Low accuracy - could vary significantly"
+
+
+def _format_time_estimate(seconds: float) -> str:
+    """Format time estimate in human-readable format."""
+    if seconds < 60:
+        return f"~{int(seconds)} seconds"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"~{minutes}m {secs}s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"~{hours}h {minutes}m"
+
+
 @app.function(
     image=blender_image,
     timeout=86400,  # Set to 24 hours maximum for very complex scenes
@@ -229,7 +323,28 @@ def _get_render_progress(call_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _write_render_progress(client, call_id: str, elapsed_seconds: float, frames_done: Optional[int] = None, total_frames: Optional[int] = None, eta_seconds: Optional[float] = None) -> None:
+def _detect_stuck_render(progress_state: Dict[str, Any], elapsed_seconds: float, total_frames: int) -> bool:
+    """Detect if a render is stuck based on progress patterns."""
+    frames_done = progress_state.get("frames_done", 0)
+    last_frames_done = progress_state.get("last_frames_done", 0)
+    last_check_time = progress_state.get("last_check_time", 0.0)
+    
+    # Update progress tracking
+    progress_state["last_frames_done"] = frames_done
+    progress_state["last_check_time"] = elapsed_seconds
+    
+    # If no progress for more than 10 minutes and we've rendered at least one frame
+    if frames_done > 0 and frames_done == last_frames_done and (elapsed_seconds - last_check_time) > 600:
+        return True
+    
+    # If still on first frame after more than 30 minutes
+    if frames_done == 0 and elapsed_seconds > 1800 and total_frames > 1:
+        return True
+    
+    return False
+
+
+def _write_render_progress(client, call_id: str, elapsed_seconds: float, frames_done: Optional[int] = None, total_frames: Optional[int] = None, eta_seconds: Optional[float] = None, blender_remaining: Optional[str] = None, blender_elapsed: Optional[str] = None, estimate_source: Optional[str] = None) -> None:
     """Write progress JSON to Supabase storage for the UI to poll."""
     bucket = os.environ.get("SUPABASE_RENDERS_BUCKET", "renders")
     key = f"progress/{call_id}.json"
@@ -238,6 +353,9 @@ def _write_render_progress(client, call_id: str, elapsed_seconds: float, frames_
         "frames_done": frames_done,
         "total_frames": total_frames,
         "eta_seconds": round(eta_seconds, 1) if eta_seconds is not None else None,
+        "blender_remaining": blender_remaining,
+        "blender_elapsed": blender_elapsed,
+        "estimate_source": estimate_source,
     }
     try:
         client.storage.from_(bucket).upload(
@@ -309,29 +427,23 @@ def _render_blend_bytes(file_bytes: bytes, output_key: str) -> tuple[str, float]
         complexity = _analyze_blend_file_complexity(blend_path, job_id)
         estimated_time = complexity.get('estimated_total_time', 600)
         
-        # Calculate dynamic timeout (estimated time + 50% buffer + 5 minutes minimum)
-        dynamic_timeout = max(300, int(estimated_time * 1.5))
-        
-        # Add extra safety margin for very complex scenes
-        if complexity.get('complexity_score', 1.0) > 10:
-            dynamic_timeout = int(dynamic_timeout * 2)  # Double timeout for very complex scenes
-        elif complexity.get('complexity_score', 1.0) > 5:
-            dynamic_timeout = int(dynamic_timeout * 1.5)  # 1.5x timeout for complex scenes
-        
-        # Add extra buffer for Zstandard compressed files
-        if complexity.get('compression_multiplier', 1.0) > 1.0:
-            dynamic_timeout = int(dynamic_timeout * 1.3)  # Extra 30% for compressed files
-        
-        # Cap at maximum reasonable timeout (2 hours)
-        dynamic_timeout = min(7200, dynamic_timeout)
-        
-        # For very complex scenes, allow up to 24 hours
-        if complexity.get('complexity_score', 1.0) > 20:
-            dynamic_timeout = 86400  # 24 hours for extremely complex scenes
+        # Use intelligent timeout system - only timeout if truly stuck or excessive frames
+        # Check for excessive frame count (>500 frames)
+        total_frames = complexity.get('frames', 1)
+        if total_frames > 500:
+            dynamic_timeout = 86400  # 24 hours for very high frame counts
+        else:
+            # For normal frame counts, use a very long base timeout to avoid false timeouts
+            # We'll rely on progress monitoring to detect stuck renders
+            dynamic_timeout = 43200  # 12 hours base timeout
+            
+            # Only add extra time for very complex scenes
+            if complexity.get('complexity_score', 1.0) > 20:
+                dynamic_timeout = 86400  # 24 hours for extremely complex scenes
         
         print(f"[{job_id}] Scene complexity score: {complexity.get('complexity_score', 1.0):.1f}")
-        print(f"[{job_id}] Compression multiplier: {complexity.get('compression_multiplier', 1.0):.1f}")
-        print(f"[{job_id}] Using dynamic timeout: {dynamic_timeout}s (estimated: {estimated_time:.1f}s)")
+        print(f"[{job_id}] Total frames: {total_frames}")
+        print(f"[{job_id}] Using intelligent timeout: {dynamic_timeout}s (estimated: {estimated_time:.1f}s)")
 
         # Run Blender render
         output_base = os.path.join(tmpdir, "render")
@@ -579,29 +691,23 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
         complexity = _analyze_blend_file_complexity(blend_path, job_id)
         estimated_time = complexity.get('estimated_total_time', 600)
         
-        # Calculate dynamic timeout (estimated time + 50% buffer + 5 minutes minimum)
-        dynamic_timeout = max(300, int(estimated_time * 1.5))
-        
-        # Add extra safety margin for very complex scenes
-        if complexity.get('complexity_score', 1.0) > 10:
-            dynamic_timeout = int(dynamic_timeout * 2)  # Double timeout for very complex scenes
-        elif complexity.get('complexity_score', 1.0) > 5:
-            dynamic_timeout = int(dynamic_timeout * 1.5)  # 1.5x timeout for complex scenes
-        
-        # Add extra buffer for Zstandard compressed files
-        if complexity.get('compression_multiplier', 1.0) > 1.0:
-            dynamic_timeout = int(dynamic_timeout * 1.3)  # Extra 30% for compressed files
-        
-        # Cap at maximum reasonable timeout (2 hours)
-        dynamic_timeout = min(7200, dynamic_timeout)
-        
-        # For very complex scenes, allow up to 24 hours
-        if complexity.get('complexity_score', 1.0) > 20:
-            dynamic_timeout = 86400  # 24 hours for extremely complex scenes
+        # Use intelligent timeout system - only timeout if truly stuck or excessive frames
+        # Check for excessive frame count (>500 frames)
+        total_frames = complexity.get('frames', 1)
+        if total_frames > 500:
+            dynamic_timeout = 86400  # 24 hours for very high frame counts
+        else:
+            # For normal frame counts, use a very long base timeout to avoid false timeouts
+            # We'll rely on progress monitoring to detect stuck renders
+            dynamic_timeout = 43200  # 12 hours base timeout
+            
+            # Only add extra time for very complex scenes
+            if complexity.get('complexity_score', 1.0) > 20:
+                dynamic_timeout = 86400  # 24 hours for extremely complex scenes
         
         print(f"[{job_id}] Scene complexity score: {complexity.get('complexity_score', 1.0):.1f}")
-        print(f"[{job_id}] Compression multiplier: {complexity.get('compression_multiplier', 1.0):.1f}")
-        print(f"[{job_id}] Using dynamic timeout: {dynamic_timeout}s (estimated: {estimated_time:.1f}s)")
+        print(f"[{job_id}] Total frames: {total_frames}")
+        print(f"[{job_id}] Using intelligent timeout: {dynamic_timeout}s (estimated: {estimated_time:.1f}s)")
 
         # Run Blender in headless mode with optimized settings
         output_base = os.path.join(tmpdir, "render")
@@ -615,6 +721,7 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
             for line in iter(pipe.readline, ""):
                 blender_stdout_lines.append(line)
                 line = line.strip()
+                
                 # Parse Blender-style output: Fra:123, Frame 123/456, or Saved ...
                 m = re.search(r"Fra:\s*(\d+)", line, re.IGNORECASE)
                 if m:
@@ -627,6 +734,20 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
                             progress_state["frames_done"] = max(progress_state["frames_done"], int(m.group(1)))
                             if m.lastindex >= 2 and m.group(2):
                                 progress_state["total_frames"] = int(m.group(2))
+                
+                # Parse Blender's time estimation: "Time: 00:01:23.45" or "Remaining: 00:00:45.12"
+                time_match = re.search(r"Time:\s*(\d{2}:\d{2}:\d{2}\.\d{2})", line, re.IGNORECASE)
+                remaining_match = re.search(r"Remaining:\s*(\d{2}:\d{2}:\d{2}\.\d{2})", line, re.IGNORECASE)
+                
+                if time_match or remaining_match:
+                    with progress_lock:
+                        if time_match:
+                            # Blender shows elapsed time
+                            progress_state["blender_elapsed"] = time_match.group(1)
+                        if remaining_match:
+                            # Blender shows remaining time - this is what we want!
+                            progress_state["blender_remaining"] = remaining_match.group(1)
+                            progress_state["blender_estimate_source"] = "blender"
 
         def _progress_loop():
             while True:
@@ -641,10 +762,39 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
                     elapsed = time.time() - render_start
                     fd = progress_state["frames_done"]
                     tf = progress_state["total_frames"]
-                eta = None
-                if tf and tf > 0 and fd > 0 and fd <= tf:
-                    eta = (elapsed / fd) * (tf - fd)
-                _write_render_progress(client, call_id, elapsed, fd if fd else None, tf, eta)
+                    
+                    # Check if render is stuck
+                    if tf and _detect_stuck_render(progress_state, elapsed, tf):
+                        print(f"[{job_id}] Render appears to be stuck - no progress for too long")
+                        # Kill process if stuck
+                        if 'proc' in locals() and proc.poll() is None:
+                            proc.kill()
+                        return
+                    
+                    # Use Blender's own time estimation if available
+                    blender_remaining = progress_state.get("blender_remaining")
+                    blender_elapsed = progress_state.get("blender_elapsed")
+                    estimate_source = progress_state.get("blender_estimate_source")
+                    
+                    # Convert Blender time format to seconds
+                    eta_seconds = None
+                    if blender_remaining:
+                        try:
+                            # Parse HH:MM:SS.ms format
+                            time_parts = blender_remaining.split(':')
+                            hours = int(time_parts[0])
+                            minutes = int(time_parts[1])
+                            seconds = float(time_parts[2])
+                            eta_seconds = hours * 3600 + minutes * 60 + seconds
+                        except:
+                            pass
+                    elif tf and tf > 0 and fd > 0 and fd <= tf:
+                        # Fallback to calculation if Blender doesn't provide estimate
+                        eta = (elapsed / fd) * (tf - fd)
+                        eta_seconds = eta
+                    
+                _write_render_progress(client, call_id, elapsed, fd if fd else None, tf, eta_seconds, 
+                                  blender_remaining, blender_elapsed, estimate_source)
 
         try:
             print(f"[{job_id}] Starting Blender render...")
@@ -784,81 +934,6 @@ def render_blend_batch(blend_urls: list[str], output_keys: Optional[list[str]] =
     return successful_renders
 
 
-@app.function(image=blender_image, timeout=1800)
-@modal.fastapi_endpoint(method="POST")
-def render_http(request: dict):
-    """Single render endpoint that handles file uploads efficiently."""
-    try:
-        import base64
-        from fastapi import Request, HTTPException
-        from fastapi.responses import JSONResponse
-        
-        print(f"Received request: {type(request)}")
-        print(f"Request content: {request}")
-        
-        # Handle the request more efficiently
-        if isinstance(request, dict):
-            # Check for base64 encoded data (new method)
-            if 'blend_file_base64' in request:
-                blend_file_base64 = request['blend_file_base64']
-                output_key = request.get('output_key')
-                
-                print(f"Received render request with base64 data ({len(blend_file_base64)} chars)")
-                
-                # Decode base64 back to bytes
-                file_bytes = base64.b64decode(blend_file_base64)
-                print(f"Decoded to {len(file_bytes)} bytes")
-                
-            # Handle legacy array format (for smaller files)
-            elif 'blend_file_bytes' in request:
-                from pydantic import BaseModel
-                
-                class RenderRequest(BaseModel):
-                    blend_file_bytes: list[int]
-                    output_key: Optional[str] = None
-                
-                render_request = RenderRequest(**request)
-                blend_file_bytes = render_request.blend_file_bytes
-                output_key = render_request.output_key
-                
-                print(f"Received render request for file with {len(blend_file_bytes)} bytes")
-                
-                # Convert list back to bytes
-                file_bytes = bytes(blend_file_bytes)
-            else:
-                raise HTTPException(status_code=400, detail="No file data provided")
-        else:
-            # Handle multipart form data (for larger files) - increased size limit
-            from fastapi import Form
-            try:
-                form = Form()
-                blend_file_base64 = form.blend_file_base64
-                output_key = form.output_key
-                
-                print(f"Received render request with form data ({len(blend_file_base64)} chars)")
-                
-                # Decode base64 back to bytes
-                file_bytes = base64.b64decode(blend_file_base64)
-                print(f"Decoded to {len(file_bytes)} bytes")
-                
-            except Exception as form_error:
-                print(f"Form parsing error: {form_error}")
-                raise HTTPException(status_code=400, detail=f"Form parsing failed: {form_error}")
-        
-        if output_key is None:
-            output_key = f"renders/{int(time.time())}_{hash(str(file_bytes)) % 10000}.mp4"
-        
-        url, render_time = _render_blend_bytes(file_bytes, output_key=output_key)
-        
-        return {"url": url, "render_time_seconds": render_time}
-        
-    except Exception as e:
-        print(f"Render failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return f"ERROR: {str(e)}"
-
-
 @app.function(image=blender_image, timeout=120)
 @modal.fastapi_endpoint(method="POST")
 async def submit_render_http(
@@ -874,27 +949,7 @@ async def submit_render_http(
     return {"call_id": call_id, "output_key": output_key}
 
 
-@app.function(image=blender_image, timeout=120)
-@modal.fastapi_endpoint(method="POST")
-def render_from_url_http(request: dict):
-    """Start a render job from a blend file URL (e.g. signed Supabase URL). Returns call_id for polling."""
-    try:
-        blend_url = request.get("blend_url")
-        output_key = request.get("output_key")
-        if not blend_url:
-            return {"error": "Missing blend_url"}
-        if not output_key:
-            import uuid
-            output_key = f"renders/{int(time.time())}_{uuid.uuid4().hex[:8]}.mp4"
-        call = render_blend_file.spawn(blend_url, output_key=output_key)
-        call_id = getattr(call, "object_id", None) or getattr(call, "id", None)
-        if call_id is None:
-            call_id = str(call)
-        return {"call_id": call_id, "output_key": output_key}
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"error": str(e)}
+# Removed render_from_url_http endpoint - not used by current UI
 
 
 @app.function(image=blender_image, timeout=120)
@@ -959,31 +1014,8 @@ def render_result_http(call_id: str = "", callId: str = ""):
         return {"status": "error", "error": str(e)}
 
 
-@app.function(image=blender_image, timeout=1800)
-@modal.fastapi_endpoint(method="POST")
-def render_batch_http(data: dict):
-    """Batch render endpoint for maximum efficiency."""
-    blend_urls = data.get("blend_urls", [])
-    output_keys = data.get("output_keys")
-    urls = render_blend_batch.remote(blend_urls, output_keys=output_keys)
-    return {"image_urls": urls}
+# Removed render_batch_http endpoint - not used by current UI
 
 
-@app.function(image=blender_image, timeout=120)
-@modal.fastapi_endpoint(method="GET")
-def get_status():
-    """Get system status and configuration."""
-    return {
-        "status": "healthy",
-        "max_concurrent_renders": MAX_CONCURRENT_RENDERS,
-        "gpu_memory": GPU_MEMORY,
-        "use_spot_instances": USE_SPOT_INSTANCES,
-        "blender_version": BLENDER_VERSION,
-        "capabilities": {
-            "single_render": True,
-            "batch_render": True,
-            "parallel_processing": True,
-            "cost_optimization": True
-        }
-    }
+# Removed get_status endpoint - not essential for core functionality
 
