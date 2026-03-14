@@ -55,7 +55,7 @@ USE_SPOT_INSTANCES = os.environ.get("USE_SPOT_INSTANCES", "true").lower() == "tr
 
 @app.function(
     image=blender_image,
-    timeout=1800,
+    timeout=86400,  # Set to 24 hours maximum for very complex scenes
     gpu="t4",
     max_containers=MAX_CONCURRENT_RENDERS,
     scaledown_window=300,
@@ -88,6 +88,145 @@ def _get_supabase_client():
             "to your Modal secret named 'supabase'. See: modal.com/docs/guide/secrets"
         )
     return create_client(url, key)
+
+
+def _analyze_blend_file_complexity(blend_path: str, job_id: str) -> Dict[str, Any]:
+    """Analyze blend file to estimate render complexity and adjust timeout."""
+    try:
+        env = os.environ.copy()
+        env['DISPLAY'] = ':99'
+        env['PYTHONDONTWRITEBYTECODE'] = '1'
+        
+        # Get scene information
+        result = subprocess.run(
+            [
+                BLENDER_BIN, "-b", blend_path,
+                "--python-expr", """
+import bpy
+scene = bpy.context.scene
+print(f"FRAMES:{scene.frame_end - scene.frame_start + 1}")
+print(f"RESOLUTION:{scene.render.resolution_x}x{scene.render.resolution_y}")
+print(f"FPS:{scene.render.fps}")
+print(f"SAMPLES:{getattr(scene.cycles, 'samples', getattr(scene.eevee, 'taa_render_samples', 128))}")
+print(f"ENGINE:{scene.render.engine}")
+"""
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            env=env
+        )
+        
+        output = result.stdout
+        complexity_info = {}
+        
+        # Parse scene information
+        for line in output.split('\n'):
+            if line.startswith('FRAMES:'):
+                complexity_info['frames'] = int(line.split(':')[1])
+            elif line.startswith('RESOLUTION:'):
+                complexity_info['resolution'] = line.split(':')[1]
+            elif line.startswith('FPS:'):
+                complexity_info['fps'] = int(line.split(':')[1])
+            elif line.startswith('SAMPLES:'):
+                complexity_info['samples'] = int(line.split(':')[1])
+            elif line.startswith('ENGINE:'):
+                complexity_info['engine'] = line.split(':')[1]
+        
+        # Calculate complexity score and estimated time
+        frames = complexity_info.get('frames', 1)
+        resolution_parts = complexity_info.get('resolution', '1920x1080').split('x')
+        resolution_x = int(resolution_parts[0])
+        resolution_y = int(resolution_parts[1])
+        samples = complexity_info.get('samples', 128)
+        engine = complexity_info.get('engine', 'CYCLES')
+        
+        # Base time per frame (seconds) - rough estimates
+        base_time_per_frame = 0.5  # Base time
+        resolution_factor = (resolution_x * resolution_y) / (1920 * 1080)  # Resolution scaling
+        sample_factor = samples / 128  # Sample scaling
+        engine_factor = 3.0 if engine == 'CYCLES' else 1.0  # Cycles is slower
+        
+        # Add conservative multiplier for Zstandard compressed files (often more complex)
+        compression_multiplier = 1.5  # Zstd files tend to be more complex scenes
+        
+        estimated_time_per_frame = base_time_per_frame * resolution_factor * sample_factor * engine_factor * compression_multiplier
+        estimated_total_time = frames * estimated_time_per_frame
+        
+        # Apply more conservative sanity checks
+        if estimated_total_time < 30:  # Less than 30 seconds seems too optimistic
+            estimated_total_time = 180  # Minimum 3 minutes
+        elif estimated_total_time > 3600:  # More than 1 hour per frame seems excessive
+            estimated_total_time = 2400  # Cap at 40 minutes per frame
+        
+        complexity_info.update({
+            'estimated_time_per_frame': estimated_time_per_frame,
+            'estimated_total_time': estimated_total_time,
+            'complexity_score': frames * resolution_factor * sample_factor * engine_factor,
+            'compression_multiplier': compression_multiplier
+        })
+        
+        print(f"[{job_id}] Scene analysis: {complexity_info}")
+        return complexity_info
+        
+    except Exception as e:
+        print(f"[{job_id}] Failed to analyze scene complexity: {e}")
+        # Return conservative defaults
+        return {
+            'frames': 1,
+            'resolution': '1920x1080',
+            'fps': 24,
+            'samples': 128,
+            'engine': 'CYCLES',
+            'estimated_total_time': 600,  # 10 minutes default
+            'complexity_score': 1.0
+        }
+
+
+def _get_render_progress(call_id: str) -> Optional[Dict[str, Any]]:
+    """Get render progress from Supabase storage."""
+    try:
+        client = _get_supabase_client()
+        bucket = os.environ.get("SUPABASE_RENDERS_BUCKET", "renders")
+        key = f"progress/{call_id}.json"
+        
+        # Try to download the progress file
+        response = client.storage.from_(bucket).download(key)
+        if response:
+            progress_data = json.loads(response.decode('utf-8'))
+            
+            # Add human-readable ETA
+            if progress_data.get("eta_seconds") is not None:
+                eta_seconds = progress_data["eta_seconds"]
+                if eta_seconds > 0:
+                    # Convert to human-readable format
+                    if eta_seconds < 60:
+                        progress_data["eta_formatted"] = f"{int(eta_seconds)}s"
+                    elif eta_seconds < 3600:
+                        minutes = int(eta_seconds // 60)
+                        seconds = int(eta_seconds % 60)
+                        progress_data["eta_formatted"] = f"{minutes}m {seconds}s"
+                    else:
+                        hours = int(eta_seconds // 3600)
+                        minutes = int((eta_seconds % 3600) // 60)
+                        progress_data["eta_formatted"] = f"{hours}h {minutes}m"
+                    
+                    # Add estimated completion time
+                    import datetime
+                    completion_time = datetime.datetime.now() + datetime.timedelta(seconds=eta_seconds)
+                    progress_data["estimated_completion"] = completion_time.isoformat()
+            
+            # Add progress percentage
+            if progress_data.get("frames_done") and progress_data.get("total_frames"):
+                frames_done = progress_data["frames_done"]
+                total_frames = progress_data["total_frames"]
+                progress_data["progress_percent"] = round((frames_done / total_frames) * 100, 1)
+            
+            return progress_data
+    except Exception as e:
+        print(f"[progress] Failed to get progress for {call_id}: {e}")
+        return None
 
 
 def _write_render_progress(client, call_id: str, elapsed_seconds: float, frames_done: Optional[int] = None, total_frames: Optional[int] = None, eta_seconds: Optional[float] = None) -> None:
@@ -166,6 +305,34 @@ def _render_blend_bytes(file_bytes: bytes, output_key: str) -> tuple[str, float]
         with open(blend_path, "wb") as f:
             f.write(file_bytes)
 
+        # Analyze scene complexity to determine appropriate timeout
+        complexity = _analyze_blend_file_complexity(blend_path, job_id)
+        estimated_time = complexity.get('estimated_total_time', 600)
+        
+        # Calculate dynamic timeout (estimated time + 50% buffer + 5 minutes minimum)
+        dynamic_timeout = max(300, int(estimated_time * 1.5))
+        
+        # Add extra safety margin for very complex scenes
+        if complexity.get('complexity_score', 1.0) > 10:
+            dynamic_timeout = int(dynamic_timeout * 2)  # Double timeout for very complex scenes
+        elif complexity.get('complexity_score', 1.0) > 5:
+            dynamic_timeout = int(dynamic_timeout * 1.5)  # 1.5x timeout for complex scenes
+        
+        # Add extra buffer for Zstandard compressed files
+        if complexity.get('compression_multiplier', 1.0) > 1.0:
+            dynamic_timeout = int(dynamic_timeout * 1.3)  # Extra 30% for compressed files
+        
+        # Cap at maximum reasonable timeout (2 hours)
+        dynamic_timeout = min(7200, dynamic_timeout)
+        
+        # For very complex scenes, allow up to 24 hours
+        if complexity.get('complexity_score', 1.0) > 20:
+            dynamic_timeout = 86400  # 24 hours for extremely complex scenes
+        
+        print(f"[{job_id}] Scene complexity score: {complexity.get('complexity_score', 1.0):.1f}")
+        print(f"[{job_id}] Compression multiplier: {complexity.get('compression_multiplier', 1.0):.1f}")
+        print(f"[{job_id}] Using dynamic timeout: {dynamic_timeout}s (estimated: {estimated_time:.1f}s)")
+
         # Run Blender render
         output_base = os.path.join(tmpdir, "render")
         try:
@@ -188,12 +355,14 @@ def _render_blend_bytes(file_bytes: bytes, output_key: str) -> tuple[str, float]
                     "-a",
                     "--threads", "0",
                     "-noaudio",
+                    "--render-anim",
+                    "--fps-base", "1",
                 ],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=1200,
+                timeout=dynamic_timeout,
                 env=env
             )
 
@@ -251,8 +420,8 @@ def _render_blend_bytes(file_bytes: bytes, output_key: str) -> tuple[str, float]
 
 
 def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
-    """Upload rendered file to Supabase with retry logic."""
-    max_retries = 3
+    """Upload rendered file to Supabase with retry logic and better error handling."""
+    max_retries = 5  # Increased retries for upload issues
     for attempt in range(max_retries):
         try:
             client = _get_supabase_client()
@@ -266,7 +435,24 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
             clean_key = output_key
             if clean_key.startswith("renders/"):
                 clean_key = clean_key[len("renders/"):]
-            client.storage.from_(bucket).upload(clean_key, data, {"content-type": "video/mp4"})
+
+            # Check if file already exists and handle it
+            try:
+                client.storage.from_(bucket).upload(clean_key, data, {"content-type": "video/mp4", "upsert": "true"})
+            except Exception as upload_error:
+                # If upload fails due to file existing, try to delete and re-upload
+                if "already exists" in str(upload_error) or "409" in str(upload_error):
+                    print(f"[upload] File already exists, deleting and re-uploading...")
+                    try:
+                        client.storage.from_(bucket).remove([clean_key])
+                        time.sleep(1)  # Brief pause before re-upload
+                        client.storage.from_(bucket).upload(clean_key, data, {"content-type": "video/mp4"})
+                    except Exception as delete_error:
+                        print(f"[upload] Delete failed: {delete_error}")
+                        # If delete fails, try upsert instead
+                        client.storage.from_(bucket).upload(clean_key, data, {"content-type": "video/mp4", "upsert": "true"})
+                else:
+                    raise upload_error
 
             # Create a signed URL so the app can display the image
             expires_in = int(os.environ.get("SUPABASE_RENDER_URL_TTL_SECONDS", "86400"))
@@ -275,14 +461,15 @@ def _upload_render_to_supabase(local_path: str, output_key: str) -> str:
         except Exception as e:
             if attempt == max_retries - 1:
                 raise
-            wait_time = 2 ** attempt  # Exponential backoff
+            # Longer wait times for upload issues
+            wait_time = min(30, 2 ** attempt + 5)  # Cap at 30 seconds
+            print(f"[upload] Attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
             time.sleep(wait_time)
-            print(f"Upload attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
 
 
 @app.function(
     image=blender_image,
-    timeout=1800,  # Increased to 30 minutes
+    timeout=86400,  # Set to 24 hours maximum for very complex scenes
     gpu="t4",
     max_containers=MAX_CONCURRENT_RENDERS,
     scaledown_window=300,
@@ -388,6 +575,34 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
         with open(blend_path, "wb") as f:
             f.write(data)
 
+        # Analyze scene complexity to determine appropriate timeout
+        complexity = _analyze_blend_file_complexity(blend_path, job_id)
+        estimated_time = complexity.get('estimated_total_time', 600)
+        
+        # Calculate dynamic timeout (estimated time + 50% buffer + 5 minutes minimum)
+        dynamic_timeout = max(300, int(estimated_time * 1.5))
+        
+        # Add extra safety margin for very complex scenes
+        if complexity.get('complexity_score', 1.0) > 10:
+            dynamic_timeout = int(dynamic_timeout * 2)  # Double timeout for very complex scenes
+        elif complexity.get('complexity_score', 1.0) > 5:
+            dynamic_timeout = int(dynamic_timeout * 1.5)  # 1.5x timeout for complex scenes
+        
+        # Add extra buffer for Zstandard compressed files
+        if complexity.get('compression_multiplier', 1.0) > 1.0:
+            dynamic_timeout = int(dynamic_timeout * 1.3)  # Extra 30% for compressed files
+        
+        # Cap at maximum reasonable timeout (2 hours)
+        dynamic_timeout = min(7200, dynamic_timeout)
+        
+        # For very complex scenes, allow up to 24 hours
+        if complexity.get('complexity_score', 1.0) > 20:
+            dynamic_timeout = 86400  # 24 hours for extremely complex scenes
+        
+        print(f"[{job_id}] Scene complexity score: {complexity.get('complexity_score', 1.0):.1f}")
+        print(f"[{job_id}] Compression multiplier: {complexity.get('compression_multiplier', 1.0):.1f}")
+        print(f"[{job_id}] Using dynamic timeout: {dynamic_timeout}s (estimated: {estimated_time:.1f}s)")
+
         # Run Blender in headless mode with optimized settings
         output_base = os.path.join(tmpdir, "render")
         render_start = time.time()
@@ -454,6 +669,8 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
                     "-o", output_base,
                     "-F", "FFmpeg", "-x", "1", "-a",
                     "--threads", "0", "-noaudio",
+                    "--render-anim",
+                    "--fps-base", "1",
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -466,11 +683,11 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
             progress_thread.start()
 
             try:
-                proc.wait(timeout=1200)
+                proc.wait(timeout=dynamic_timeout)  # Use dynamic timeout
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-                raise RuntimeError(f"[{job_id}] Blender render timed out after 20 minutes")
+                raise RuntimeError(f"[{job_id}] Blender render timed out after {dynamic_timeout}s (estimated: {estimated_time:.1f}s)")
 
             if proc.returncode != 0:
                 out = "".join(blender_stdout_lines)[-12000:]
@@ -485,9 +702,34 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
         except Exception as e:
             raise RuntimeError(f"[{job_id}] Blender render error: {e}") from e
 
-        output_path = output_base + ".mp4"
-        if not os.path.exists(output_path):
-            raise FileNotFoundError(f"[{job_id}] Expected Blender output {output_path} was not found.")
+        # Blender's output naming can vary based on scene settings and container format.
+        # Don't assume it's exactly `${output_base}.mp4`; search for produced video files.
+        import glob
+
+        candidates: list[str] = []
+        for ext in ("mp4", "mkv", "avi", "mov"):
+            candidates.extend(glob.glob(os.path.join(tmpdir, f"*.{ext}")))
+            candidates.extend(glob.glob(os.path.join(tmpdir, f"render*.{ext}")))
+
+        # If output path was explicitly produced, prefer it.
+        expected_mp4 = output_base + ".mp4"
+        if os.path.exists(expected_mp4):
+            output_path = expected_mp4
+        elif candidates:
+            # pick the newest file (then largest as tie-breaker)
+            candidates.sort(key=lambda p: (os.path.getmtime(p), os.path.getsize(p)), reverse=True)
+            output_path = candidates[0]
+        else:
+            tail = "".join(blender_stdout_lines)[-12000:] if "blender_stdout_lines" in locals() else ""
+            files = []
+            try:
+                files = sorted(os.listdir(tmpdir))
+            except Exception:
+                pass
+            raise FileNotFoundError(
+                f"[{job_id}] Blender completed but no video output was found in {tmpdir}. "
+                f"Files: {files}. Blender output tail:\n{tail}"
+            )
 
         file_size = os.path.getsize(output_path)
         print(f"[{job_id}] Render output size: {file_size / (1024*1024):.1f} MB")
@@ -506,8 +748,8 @@ def render_blend_file(blend_url: str, output_key: Optional[str] = None) -> Dict[
 
 @app.function(
     image=blender_image,
-    timeout=1800,  # 30 minutes for batch
-    gpu="t4",
+    timeout=86400,  # Set to 24 hours maximum for very complex scenes
+    gpu="l4",
     max_containers=MAX_CONCURRENT_RENDERS,
     scaledown_window=300,
     retries=3,
@@ -657,6 +899,29 @@ def render_from_url_http(request: dict):
 
 @app.function(image=blender_image, timeout=120)
 @modal.fastapi_endpoint(method="GET")
+def render_progress_http(call_id: str = "", callId: str = ""):
+    """Get detailed render progress including ETA. Accepts call_id or callId query param."""
+    cid = call_id or callId
+    if not cid:
+        return {"status": "error", "error": "Missing call_id or callId"}
+    
+    try:
+        progress = _get_render_progress(cid)
+        if progress:
+            return {
+                "status": "success",
+                "progress": progress
+            }
+        else:
+            return {"status": "no_progress", "message": "No progress data available"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
+
+
+@app.function(image=blender_image, timeout=120)
+@modal.fastapi_endpoint(method="GET")
 def render_result_http(call_id: str = "", callId: str = ""):
     """Poll for render result. Accepts call_id or callId query param."""
     cid = call_id or callId
@@ -677,6 +942,16 @@ def render_result_http(call_id: str = "", callId: str = ""):
             }
         return {"status": "done", "url": result}
     except TimeoutError:
+        # For running renders, try to get progress information
+        try:
+            progress = _get_render_progress(cid)
+            if progress:
+                return {
+                    "status": "running",
+                    "progress": progress
+                }
+        except Exception:
+            pass  # Fallback to basic running status
         return {"status": "running"}
     except Exception as e:
         import traceback
